@@ -529,18 +529,122 @@ int xa2_get_buffer_size(void)
     return XA2_BUF_SAMPLES;
 }
 
-#else /* !_WIN32 -- POSIX stubs (no audio output yet) */
+#else /* !_WIN32 -- null sink: a sound device that plays nothing, on a real clock */
 
-int  xa2_init(void)                                   { return 0; }
-void xa2_shutdown(void)                               {}
-int  xa2_is_active(void)                              { return 0; }
-int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return 0; }
-int  xa2_get_buffer_size(void)                        { return 0; }
-int  xa2_channels(void)                               { return 2; }
-int  xa2_target_queued(void)                          { return XA2_TARGET_QUEUED; }
-/* TODO(0.5): apu_core paces the mixer on this. Reporting 0 means "nothing queued",
- * so the APU thread would mix flat out instead of at the sample rate. The headless
- * null sink has to drain submitted samples in real time and report what is left. */
-int  xa2_queued(void)                                 { return 0; }
+/* apu_core paces its mixer on xa2_queued() (throttle_realtime), so a sink that
+ * reports "nothing queued" makes the mixer run flat out instead of at the sample
+ * rate, and the title's audio clock -- which DSOUND polls -- runs fast. This sink
+ * models the device's clock instead: it "plays" 48000 sample frames per second of
+ * wall time, drains what has been submitted, and reports the buffers still waiting.
+ * When nothing is submitted it underruns, as a real device does; time still passes. */
+#include <time.h>
+#include <pthread.h>
+#include <stdio.h>
+
+#define NULL_SAMPLE_RATE 48000u
+#define NULL_BUF_FRAMES  256u        /* one submission = 256 sample frames */
+#define NULL_MAX_QUEUED  24u         /* the Windows sink's XA2_NUM_BUFS */
+
+static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+static int       s_active;
+static uint64_t  s_submitted;        /* sample frames handed over */
+static uint64_t  s_played;           /* sample frames the virtual device has consumed */
+static uint64_t  s_last_ns;
+static unsigned long s_underruns, s_drops;
+static int       s_frames_written;
+
+static uint64_t mono_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* Advance the device clock; lock held. */
+static void advance(void)
+{
+    uint64_t now = mono_ns();
+    uint64_t can = (now - s_last_ns) * NULL_SAMPLE_RATE / 1000000000ull;
+    if (can) {
+        uint64_t have = s_submitted - s_played;
+        s_played += can < have ? can : have;
+        /* keep the sub-frame remainder of the clock */
+        s_last_ns += can * 1000000000ull / NULL_SAMPLE_RATE;
+    }
+}
+
+static unsigned queued_buffers(void)
+{
+    return (unsigned)((s_submitted - s_played + NULL_BUF_FRAMES - 1) / NULL_BUF_FRAMES);
+}
+
+int xa2_init(void)
+{
+    pthread_mutex_lock(&s_lock);
+    s_submitted = s_played = 0;
+    s_last_ns = mono_ns();
+    s_underruns = s_drops = 0;
+    s_frames_written = 0;
+    s_active = 1;
+    pthread_mutex_unlock(&s_lock);
+    fprintf(stderr, "[XA2] null sink: 48000 Hz stereo, plays nothing, real-time clock\n");
+    return 1;
+}
+
+void xa2_shutdown(void)
+{
+    pthread_mutex_lock(&s_lock);
+    s_active = 0;
+    pthread_mutex_unlock(&s_lock);
+    fprintf(stderr, "[XA2] Shut down (%d buffers written, %lu underruns, %lu dropped)\n",
+            s_frames_written, s_underruns, s_drops);
+}
+
+/* test hook: sample frames handed to the sink so far */
+uint64_t xa2_null_frames_submitted(void) { return s_submitted; }
+
+int xa2_is_active(void)        { return s_active; }
+int xa2_channels(void)         { return 2; }
+int xa2_get_buffer_size(void)  { return NULL_BUF_FRAMES; }
+
+int xa2_target_queued(void)
+{
+    static int target;
+    if (!target) {
+        const char *e = getenv("XBOX_AUDIO_QUEUE");
+        int n = (e && *e) ? atoi(e) : XA2_TARGET_QUEUED;
+        if (n < XA2_QUEUE_MIN) n = XA2_QUEUE_MIN;
+        if (n > XA2_QUEUE_MAX) n = XA2_QUEUE_MAX;
+        target = n;
+    }
+    return target;
+}
+
+int xa2_queued(void)
+{
+    unsigned q;
+    pthread_mutex_lock(&s_lock);
+    if (!s_active) { pthread_mutex_unlock(&s_lock); return 0; }
+    advance();
+    q = queued_buffers();
+    pthread_mutex_unlock(&s_lock);
+    return (int)q;
+}
+
+int xa2_submit_samples(const int16_t *samples, int num_samples)
+{
+    (void)samples;
+    pthread_mutex_lock(&s_lock);
+    if (!s_active) { pthread_mutex_unlock(&s_lock); return 0; }
+    advance();
+    if (queued_buffers() >= NULL_MAX_QUEUED) { s_drops++; pthread_mutex_unlock(&s_lock); return 0; }
+    if (s_submitted == s_played && s_frames_written > (int)NULL_MAX_QUEUED)
+        s_underruns++;                       /* the device ran dry before this arrived */
+    if (s_submitted == s_played) s_last_ns = mono_ns();   /* an idle device starts playing now */
+    s_submitted += (uint64_t)(num_samples > (int)NULL_BUF_FRAMES ? (int)NULL_BUF_FRAMES : num_samples);
+    s_frames_written++;
+    pthread_mutex_unlock(&s_lock);
+    return 1;
+}
 
 #endif /* _WIN32 */

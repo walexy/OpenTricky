@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include "recomp_types.h"
 #include "kernel/xbox_memory_layout.h"
 #include "platform/mmio_trap.h"
@@ -21,6 +22,8 @@ static int g_fail, g_pass;
 
 int main(void)
 {
+    char dumpdir[] = "/tmp/ot_fbdump_XXXXXX";
+    if (mkdtemp(dumpdir)) setenv("XBOX_DUMP_FB", dumpdir, 1);   /* read once, at the first present */
     static uint8_t xbe[0x1000];
     if (!xbox_MemoryLayoutInit(xbe, sizeof xbe)) { printf("FAIL: xbox_MemoryLayoutInit\n"); return 1; }
     g_xbox_mem_offset = xbox_GetMemoryOffset();
@@ -90,6 +93,86 @@ int main(void)
     CHECK(MEM8(0xFD681000u + 0x3C6) == 0xFF, "DAC pixel mask reads back");
     CHECK(ot_mmio_trap_count() - t0 >= 8, "device accesses went through the trap (%llu)",
           (unsigned long long)(ot_mmio_trap_count() - t0));
+
+    /* ---- null backend: drive the pump with a hand-made push buffer ----------- */
+    {
+        const uint32_t ctx = 0x00780000u, ring = 0x00800000u, ring_len = 0x10000u, reports = 0x00300000u;
+        uint32_t wp = ring;
+        MEM32(0x001776C0u) = ctx;                    /* the channel context pointer the pump reads */
+        MEM32(ctx + 0x00) = wp;                      /* write pointer */
+        MEM32(ctx + 0x04) = ring + ring_len;         /* limit */
+        MEM32(ctx + 0x10) = ring;                    /* buffer base */
+        MEM32(ctx + 0x14) = ring + ring_len;         /* buffer end */
+        usleep(50 * 1000);                           /* let the pump see an empty ring and bring the backend up */
+
+        extern unsigned d3d8_PresentSeq(void);
+        unsigned seq0 = d3d8_PresentSeq();
+        const int frames = 20;
+        int reports_ok = 0;
+        for (int i = 0; i < frames; i++) {
+            uint32_t surf = 0x00100000u + (uint32_t)(i & 1) * 0x00400000u;
+            uint32_t rep  = reports + (uint32_t)i * 16u;
+            MEM32(rep + 12) = 0xFFFFFFFFu;           /* "pending", as the title sets it */
+            #define EMIT(m, p) do { MEM32(wp) = (1u << 18) | (m); MEM32(wp + 4) = (p); wp += 8; } while (0)
+            EMIT(0x0100u, 0x5C000000u | (uint32_t)(i + 1));   /* NV097_NO_OPERATION: the guest's draw fence */
+            EMIT(0x0210u, surf);                     /* NV097_SET_SURFACE_COLOR_OFFSET: a flip from the second frame on */
+            EMIT(0x17FCu, 5u);                       /* NV097_SET_BEGIN_END begin ... */
+            EMIT(0x17FCu, 0u);                       /* ... end: one draw */
+            EMIT(0x17D0u, (1u << 24) | rep);         /* NV097_GET_REPORT, zpass */
+            __atomic_store_n((volatile uint32_t *)((uint8_t *)mem + ctx), wp, __ATOMIC_RELEASE);
+            for (int w = 0; w < 2000 && MEM32(rep + 12) != 0; w++) usleep(1000);
+            if (MEM32(rep + 12) == 0 && MEM32(rep + 8) == 256u) reports_ok++;
+        }
+        usleep(50 * 1000);
+        extern volatile uint32_t pgraph_d3d11_fork_fence;
+        CHECK(pgraph_d3d11_fork_fence == (uint32_t)frames, "draw fence reached the last NOP (%u)", pgraph_d3d11_fork_fence);
+        CHECK(reports_ok == frames, "every GET_REPORT completed with the visible count (%d/%d)", reports_ok, frames);
+        CHECK(d3d8_PresentSeq() - seq0 == (unsigned)frames - 1, "one present per surface flip with draws (%u for %d frames)",
+              d3d8_PresentSeq() - seq0, frames);
+    }
+
+    /* ---- guest framebuffer dump: what the movie player writes through LockRect ---- */
+    {
+        extern void d3d8_SetGuestFramebuffer(const void *src, unsigned pitch, unsigned w, unsigned h);
+        extern void d3d8_NoteGuestFramebufferLock(void);
+        extern void d3d8_PresentFrame(void);
+        static uint8_t fb[8 * 64];
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 16; x++) {     /* X8R8G8B8: B G R X */
+            uint8_t *px = fb + y * 64 + x * 4; px[0] = (uint8_t)(x * 10); px[1] = (uint8_t)(y * 20); px[2] = 200; px[3] = 0;
+        }
+        d3d8_SetGuestFramebuffer(fb, 64, 16, 8);
+        d3d8_NoteGuestFramebufferLock();
+        d3d8_PresentFrame();
+        char path[256]; snprintf(path, sizeof path, "%s/fb_00000.ppm", dumpdir);
+        FILE *f = fopen(path, "rb"); uint8_t hdr[16] = {0}, px[3] = {0};
+        int ok = 0;
+        if (f) {
+            char magic[3] = {0}; unsigned w = 0, h = 0, mx = 0;
+            if (fscanf(f, "%2s %u %u %u", magic, &w, &h, &mx) == 4 && fgetc(f) == '\n') {
+                fseek(f, 3 * (3 * 16 + 5), SEEK_CUR);        /* pixel (5, 3) */
+                ok = fread(px, 1, 3, f) == 3 && w == 16 && h == 8 && mx == 255 && magic[0] == 'P' && magic[1] == '6';
+            }
+            fclose(f);
+        }
+        (void)hdr;
+        CHECK(ok && px[0] == 200 && px[1] == 60 && px[2] == 50, "framebuffer dump: pixel (5,3) = %u,%u,%u, want 200,60,50 (R,G,B)", px[0], px[1], px[2]);
+    }
+
+    /* ---- null audio sink: the APU thread must run at the sample rate, not flat out ---- */
+    {
+        extern uint64_t xa2_null_frames_submitted(void);
+        extern int xa2_queued(void);
+        uint64_t s0 = xa2_null_frames_submitted();
+        struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+        int qmax = 0;
+        for (int i = 0; i < 40; i++) { usleep(50 * 1000); int q = xa2_queued(); if (q > qmax) qmax = q; }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        double audio = (double)(xa2_null_frames_submitted() - s0) / 48000.0;
+        printf("audio: %.2f s of sound mixed in %.2f s of wall time (queue peaked at %d buffers)\n", audio, secs, qmax);
+        CHECK(audio > secs * 0.8 && audio < secs * 1.2, "APU mixes at real time (%.2f s per %.2f s)", audio, secs);
+        CHECK(qmax <= 24, "queue stays bounded (%d)", qmax);
+    }
 
     printf("%d passed, %d failed\n", g_pass, g_fail);
     fflush(stdout);
