@@ -602,6 +602,7 @@ DWORD GetFullPathNameA(LPCSTR path, DWORD size, LPSTR out, LPSTR *filePart);
 BOOL  CreateDirectoryW(LPCWSTR path, LPSECURITY_ATTRIBUTES sa);   /* 16-bit WCHAR path, UTF-16 */
 #include <wchar.h>
 #define MAPVK_VSC_TO_VK_EX 3
+#define MemoryBarrier() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 static inline UINT MapVirtualKeyW(UINT code, UINT type) { (void)code; (void)type; return 0; }
 static inline HWND GetForegroundWindow(void) { return NULL; }
 #define _snwprintf swprintf

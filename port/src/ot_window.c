@@ -89,9 +89,33 @@ int ot_window_run(int (*guest)(void *), void *arg)
         fprintf(stderr, "[WINDOW] SDL_Init failed (%s): running without a window\n", SDL_GetError());
         return guest(arg);
     }
+#if defined(OT_GPU_RENDERER)
+    win = SDL_CreateWindow("SSX Tricky (OpenTricky, macOS: 3D in progress)", 1280, 960,
+                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    {
+        /* The GPU renderer (xboxrecomp/src/d3d/d3d8_gpu.c) owns the window's swapchain: it draws and presents
+         * from the thread that presents. This thread only runs the event loop. */
+        extern int d3d8_gpu_attach(void *device, void *window);
+        SDL_GPUDevice *gd = win ? SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, getenv("OT_GPU_DEBUG") != NULL, NULL) : NULL;
+        if (!gd || !SDL_ClaimWindowForGPUDevice(gd, win)) {
+            fprintf(stderr, "[WINDOW] no GPU device (%s): running without a window\n", SDL_GetError());
+            if (win) SDL_DestroyWindow(win);
+            SDL_Quit();
+            return guest(arg);
+        }
+        SDL_SetGPUSwapchainParameters(gd, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC);
+        d3d8_gpu_attach(gd, win);
+        fprintf(stderr, "[WINDOW] GPU renderer on %s\n", SDL_GetGPUDeviceDriver(gd));
+        ren = NULL;
+    }
+    {
+#else
     win = SDL_CreateWindow("SSX Tricky (OpenTricky, macOS: no 3D yet)", 1280, 960,
                            SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     ren = win ? SDL_CreateRenderer(win, NULL) : NULL;
+    {
+#endif
+#if !defined(OT_GPU_RENDERER)
     if (!ren) {
         fprintf(stderr, "[WINDOW] could not open a window (%s): running without one\n", SDL_GetError());
         if (win) SDL_DestroyWindow(win);
@@ -100,6 +124,8 @@ int ot_window_run(int (*guest)(void *), void *arg)
     }
     fprintf(stderr, "[WINDOW] %s renderer, video driver %s\n", SDL_GetRendererName(ren), SDL_GetCurrentVideoDriver());
     SDL_SetRenderLogicalPresentation(ren, 640, 480, SDL_LOGICAL_PRESENTATION_LETTERBOX);   /* the title's 4:3 */
+#endif
+    }
 
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, GUEST_STACK_BYTES);
@@ -115,6 +141,10 @@ int ot_window_run(int (*guest)(void *), void *arg)
         while (SDL_PollEvent(&ev))
             if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) quit = 1;
 
+#if defined(OT_GPU_RENDERER)
+        SDL_Delay(4);        /* the GPU renderer presents from the game's thread */
+        continue;
+#endif
         pthread_mutex_lock(&s_lock);
         have = s_frame && s_frame_seq != shown_seq;
         if (have) {
@@ -148,7 +178,7 @@ int ot_window_run(int (*guest)(void *), void *arg)
     }
     pthread_join(th, NULL);
     if (tex) SDL_DestroyTexture(tex);
-    SDL_DestroyRenderer(ren);
+    if (ren) SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
     return g.result;

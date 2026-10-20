@@ -19,6 +19,9 @@ set(NV2A_SOURCES
 )
 if(NOT OT_HEADLESS)
     list(APPEND NV2A_SOURCES nv2a_pgraph_d3d11.c nv2a_hdtex.c nv2a_btnicons.c)
+elseif(OT_GPU)
+    # macOS GPU renderer: the real PGRAPH translator (hdtex and button icons stay off: d3d8_null.c)
+    list(APPEND NV2A_SOURCES nv2a_pgraph_d3d11.c)
 endif()
 add_library(xbox_nv2a STATIC ${NV2A_SOURCES})
 

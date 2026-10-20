@@ -140,12 +140,15 @@ static const void *guest_fb_freshest(void)
 }
 
 /* The guest framebuffer (X8R8G8B8: bytes B G R X) as RGBA for the window. NULL = hold the last frame. */
+/* A GPU backend (d3d8_gpu.c) sets this: it gets each frame, the movie's RGBA or NULL for the 3D scene. */
+void (*d3d8_present_hook)(const uint8_t *rgba, unsigned w, unsigned h);
+
 static void post_guest_fb(const void *fb)
 {
     static uint8_t *rgba; static size_t cap;
     unsigned x, y;
     size_t need = (size_t)g_fb_w * g_fb_h * 4;
-    if (!g_frame_sink || !fb || !g_fb_w || !g_fb_h) return;
+    if ((!g_frame_sink && !d3d8_present_hook) || !fb || !g_fb_w || !g_fb_h) return;
     if (need > cap) { free(rgba); rgba = (uint8_t *)malloc(need); cap = rgba ? need : 0; }
     if (!rgba) return;
     for (y = 0; y < g_fb_h; y++) {
@@ -153,7 +156,8 @@ static void post_guest_fb(const void *fb)
         uint8_t *d = rgba + (size_t)y * g_fb_w * 4;
         for (x = 0; x < g_fb_w; x++) { d[x * 4] = s[x * 4 + 2]; d[x * 4 + 1] = s[x * 4 + 1]; d[x * 4 + 2] = s[x * 4]; d[x * 4 + 3] = 255; }
     }
-    g_frame_sink(rgba, g_fb_w, g_fb_h);
+    if (d3d8_present_hook) d3d8_present_hook(rgba, g_fb_w, g_fb_h);
+    else g_frame_sink(rgba, g_fb_w, g_fb_h);
 }
 
 static void dump_guest_fb(const void *fb)
@@ -201,7 +205,9 @@ void d3d8_PresentFrame(void)
     if (g_fb_src && d3d8_GuestFramebufferActive()) {   /* what the real present shows */
         const void *fb = guest_fb_freshest();
         dump_guest_fb(fb);
-        post_guest_fb(fb);
+        post_guest_fb(fb);       /* a GPU backend presents the movie frame itself */
+    } else if (d3d8_present_hook) {
+        d3d8_present_hook(NULL, 0, 0);      /* the 3D scene */
     }
 }
 
@@ -250,6 +256,7 @@ void  d3d8_OcclusionFlush(void) {}
 int   d3d8_OcclusionPoll(int h, unsigned long long *samples) { (void)h; if (samples) *samples = 0; return 1; }
 float d3d8_OcclusionScale(void) { return 1.0f; }
 
+#if !defined(OT_GPU)   /* a GPU build has a real device (d3d8_gpu.c) */
 /* The host device the translator would draw into. The title never calls
  * Direct3DCreate8 (its D3D8 is linked into the game); nv2a_live_pb.c creates one
  * and only checks the result for NULL. The "device" is a non-NULL token that
@@ -278,10 +285,13 @@ IDirect3D8 *xbox_Direct3DCreate8(UINT sdk)
 }
 IDirect3DDevice8 *xbox_GetD3DDevice(void) { return NULL; }   /* no device: nothing draws */
 
+#endif
+
 HRESULT d3d8_CreateTextureFromLevels(UINT w, UINT h, UINT levels, const void *const *bits,
                                      IDirect3DTexture8 **ppTex)
 { (void)w; (void)h; (void)levels; (void)bits; if (ppTex) *ppTex = NULL; return (HRESULT)0x8876086C; /* D3DERR_INVALIDCALL */ }
 
+#if !defined(OT_GPU)   /* a GPU build uses the real translator (nv2a_pgraph_d3d11.c) */
 /* ======================================================================= */
 /* pgraph_d3d11_* : the NV2A method stream                                 */
 /* ======================================================================= */
@@ -415,6 +425,8 @@ int pgraph_d3d11_method(int subchannel, uint32_t method, uint32_t param)
         return 1;
     }
 }
+
+#endif /* !OT_GPU */
 
 /* ======================================================================= */
 /* OpenTricky texture features that live in the dropped translator side    */

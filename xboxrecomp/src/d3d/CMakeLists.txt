@@ -6,9 +6,19 @@
 # nothing -- see d3d8_null.c. Selected on any host, so it can be built on Windows too.
 option(OT_HEADLESS "Build the null D3D8/PGRAPH backend (no renderer)" OFF)
 
+# OT_GPU (with OT_HEADLESS, macOS): the real PGRAPH translator (nv2a/nv2a_pgraph_d3d11.c) drawing through
+# d3d8_gpu.c, a GPU backend on SDL3's GPU API (Metal). Without it the null backend draws nothing.
+option(OT_GPU "macOS GPU renderer (SDL3 GPU API) instead of the null backend" OFF)
+
 if(OT_HEADLESS)
     add_library(xbox_d3d8 STATIC d3d8_null.c)
     target_link_libraries(xbox_d3d8 PUBLIC platform)
+    if(OT_GPU)
+        find_package(SDL3 CONFIG REQUIRED)
+        target_sources(xbox_d3d8 PRIVATE d3d8_gpu.c)
+        target_compile_definitions(xbox_d3d8 PUBLIC OT_GPU=1)
+        target_link_libraries(xbox_d3d8 PUBLIC SDL3::SDL3)
+    endif()
 elseif(WIN32)
     add_library(xbox_d3d8 STATIC
         d3d8_device.c

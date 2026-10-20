@@ -25,7 +25,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
         PYTHON="${PYTHON:-python3}"
     fi
     export PYTHON
-    OT_HEADLESS_OPT="-DOT_HEADLESS=ON -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl"
+    # OT_GPU=0 builds the null renderer instead (movies only, nothing drawn)
+    OT_GPU_OPT="-DOT_GPU=ON"; [ "${OT_GPU:-1}" = "0" ] && OT_GPU_OPT="-DOT_GPU=OFF"
+    OT_HEADLESS_OPT="-DOT_HEADLESS=ON $OT_GPU_OPT -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl"
     # The translation passes read GNU objdump's output (Apple's is LLVM's: no `-b binary`).
     # brew install binutils; it is keg-only, so expose just objdump to the passes.
     GNU_OBJDUMP="$(command -v gobjdump || true)"
@@ -96,7 +98,7 @@ cmake --build port/build -j "$NPROC"
 if [ "$(uname -s)" = "Darwin" ]; then
     # Headless bring-up: no launcher, no DLL bundling (steps 4 and 5).
     mkdir -p dist/headless && cp "port/build/SSX Tricky" dist/headless/
-    echo "Done (macOS: a window shows the movies, no 3D and no sound yet): dist/headless/SSX Tricky"
+    echo "Done (macOS: a window with the movies and the first 3D: untextured, no sound): dist/headless/SSX Tricky"
     echo "Run it from an empty folder:  \"dist/headless/SSX Tricky\" --direct <your .iso>"
     echo "XBOX_HEADLESS=1 runs without a window; XBOX_DUMP_FB=<folder> saves the movie frames as PPM pictures."
     echo "(needs: brew install sdl3). This build contains code"
