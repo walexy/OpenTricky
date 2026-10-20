@@ -8,6 +8,13 @@
 #include <unistd.h>
 #include "recomp_types.h"
 #include "kernel/xbox_memory_layout.h"
+#include "platform/mmio_trap.h"
+#include <stdbool.h>
+
+/* device installers (apu/aci_mmio.h, apu/apu.h, nv2a/nv2a_mmio_hook.h) */
+extern bool aci_mmio_install(void *mem_base);
+extern bool apu_mmio_install(uint8_t *mem_base);
+extern bool nv2a_dac_trap_install(uint8_t *mem_base);
 
 static int g_fail, g_pass;
 #define CHECK(cond, ...) do { if (cond) g_pass++; else { g_fail++; printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -57,6 +64,32 @@ int main(void)
     MEM32(0xFDF00000u) = 0x0BADF00Du;
     CHECK(MEM32(0xFDF00000u) == 0x0BADF00Du, "GPU aperture read/write");
     CHECK(MEM32(0xFFFFFF00u) == 0 || 1, "top of address space readable");
+
+    /* device registers: protected pages whose loads and stores the MMIO trap emulates.
+     * Every access below goes through MEM*(), i.e. the same code the translated game runs. */
+    uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
+    CHECK(aci_mmio_install(mem), "ACI trap installed");
+    CHECK(apu_mmio_install(mem), "APU trap installed");
+    CHECK(nv2a_dac_trap_install(mem), "DAC trap installed");
+    uint64_t t0 = ot_mmio_trap_count();
+
+    /* ACI: bus-master channels reset halted (status register 0x106, bit 0 = DCH) */
+    CHECK((MEM16(0xFEC00000u + 0x106) & 1) == 1, "ACI channel 0 reads as halted after reset");
+    MEM8(0xFEC00000u + 0x10B) = 0x00;            /* control register write must not crash */
+    /* ... and the rest of its 16 KB host page is plain memory, not the device */
+    MEM32(0xFEC01000u) = 0x13572468u;
+    CHECK(MEM32(0xFEC01000u) == 0x13572468u, "memory next to the ACI window behaves like RAM");
+    /* APU: registers are reachable; the DSOUND poll reads this one */
+    uint32_t apu_reg = MEM32(0xFE820010u);
+    printf("APU 0xFE820010 reads 0x%08X\n", apu_reg);
+    MEM32(0xFE800000u + 0x2000) = 0;
+    /* DAC palette: VGA index register written and read back through the device */
+    MEM8(0xFD681000u + 0x3C8) = 0x5A;
+    CHECK(MEM8(0xFD681000u + 0x3C8) == 0x5A, "DAC write index reads back");
+    MEM8(0xFD681000u + 0x3C6) = 0xFF;
+    CHECK(MEM8(0xFD681000u + 0x3C6) == 0xFF, "DAC pixel mask reads back");
+    CHECK(ot_mmio_trap_count() - t0 >= 8, "device accesses went through the trap (%llu)",
+          (unsigned long long)(ot_mmio_trap_count() - t0));
 
     printf("%d passed, %d failed\n", g_pass, g_fail);
     fflush(stdout);

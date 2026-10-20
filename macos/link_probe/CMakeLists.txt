@@ -27,3 +27,12 @@ target_include_directories(ot_layout_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../port/src/recomp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../xboxrecomp/src)
 target_link_libraries(ot_layout_test PRIVATE xboxrecomp)
+
+# MMIO fault-handler test (0.4), at several optimisation levels so the compiler
+# picks different AArch64 addressing forms. Only needs the platform library.
+foreach(opt O0 O1 O3)
+    add_executable(ot_mmio_test_${opt} ../mmio_test/mmio_test.c)
+    target_include_directories(ot_mmio_test_${opt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../xboxrecomp/src)
+    target_compile_options(ot_mmio_test_${opt} PRIVATE -${opt} -g)
+    target_link_libraries(ot_mmio_test_${opt} PRIVATE platform)
+endforeach()
