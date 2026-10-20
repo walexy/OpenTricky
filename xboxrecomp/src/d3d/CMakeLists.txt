@@ -2,7 +2,14 @@
 #   _WIN32 -> backed by Direct3D 11 (d3d8_*.c, d3d8_combiners.c, d3d8_vsh.c)
 #   POSIX  -> backed by OpenGL 3.3 core via SDL2 + libepoxy (d3d8_gl.c)
 
-if(WIN32)
+# OT_HEADLESS (macOS bring-up): a null backend that accepts every call and draws
+# nothing -- see d3d8_null.c. Selected on any host, so it can be built on Windows too.
+option(OT_HEADLESS "Build the null D3D8/PGRAPH backend (no renderer)" OFF)
+
+if(OT_HEADLESS)
+    add_library(xbox_d3d8 STATIC d3d8_null.c)
+    target_link_libraries(xbox_d3d8 PUBLIC platform)
+elseif(WIN32)
     add_library(xbox_d3d8 STATIC
         d3d8_device.c
         d3d8_post.c

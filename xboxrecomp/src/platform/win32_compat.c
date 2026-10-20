@@ -11,7 +11,9 @@
 #if !defined(_WIN32)
 
 /* Enable memfd_create, MAP_FIXED_NOREPLACE, timegm. Must precede all #includes. */
+#if defined(__linux__)
 #define _GNU_SOURCE
+#endif
 
 #include "win32_compat.h"
 
@@ -26,11 +28,22 @@
 #include <sched.h>
 #include <fenv.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <execinfo.h>
+#if defined(__linux__)
 #include <sys/sysinfo.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach-o/dyld.h>
+#include <sys/sysctl.h>
+#endif
 
 /* ===================================================================== */
 /* Last-error (thread-local)                                             */
 /* ===================================================================== */
+
+#define OT_MIN_THREAD_STACK ((SIZE_T)8 * 1024 * 1024)
 
 static __thread DWORD t_last_error = 0;
 
@@ -170,7 +183,7 @@ VOID WakeAllConditionVariable(PCONDITION_VARIABLE cv)
 /* ===================================================================== */
 
 typedef enum { K_EVENT, K_SEM, K_MUTEX, K_THREAD, K_TIMER, K_HEAP,
-               K_FILEMAP, K_FILE } w32_kind;
+               K_FILEMAP, K_FILE, K_WTIMER } w32_kind;
 
 #define W32_MAX_APC 16
 
@@ -213,6 +226,10 @@ typedef struct w32_object {
     DWORD           timer_period;
     WAITORTIMERCALLBACK timer_cb;
     PVOID           timer_param;
+
+    /* waitable timer (CreateWaitableTimerEx): signaled/manual_reset are shared
+     * with events; wt_gen invalidates an armed helper thread on re-arm/cancel */
+    unsigned        wt_gen;
 
     /* file mapping / fd-backed file handle */
     int             fd;
@@ -360,7 +377,8 @@ static DWORD wait_single(w32_object *o, DWORD ms)
     for (;;) {
         int ready = 0;
         switch (o->kind) {
-        case K_EVENT:  ready = o->signaled; break;
+        case K_EVENT:
+        case K_WTIMER: ready = o->signaled; break;
         case K_THREAD: ready = o->exited;   break;
         case K_SEM:    ready = (o->sem_count > 0); break;
         case K_MUTEX:
@@ -377,7 +395,8 @@ static DWORD wait_single(w32_object *o, DWORD ms)
 
     if (result == WAIT_OBJECT_0) {
         switch (o->kind) {
-        case K_EVENT: if (!o->manual_reset) o->signaled = 0; break;
+        case K_EVENT:
+        case K_WTIMER: if (!o->manual_reset) o->signaled = 0; break;
         case K_SEM:   o->sem_count--; break;
         case K_MUTEX: o->mtx_owner = GetCurrentThreadId(); o->mtx_recursion++; break;
         default: break;
@@ -599,8 +618,11 @@ HANDLE CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T stackSize,
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    if (stackSize)
-        pthread_attr_setstacksize(&attr, stackSize < 65536 ? 65536 : stackSize);
+    /* Lifted guest code keeps large frames on the native stack, so the 1 MB an
+     * Xbox thread asks for (or macOS's 512 KB default for secondary threads) is
+     * not enough: a native overflow shows up as a random fault. Floor at 8 MB. */
+    if (stackSize < OT_MIN_THREAD_STACK) stackSize = OT_MIN_THREAD_STACK;
+    pthread_attr_setstacksize(&attr, stackSize);
 
     if (pthread_create(&o->thread, &attr, thread_trampoline, o) != 0) {
         pthread_attr_destroy(&attr);
@@ -896,10 +918,19 @@ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD pro
         /* fall through to a fresh mapping */
     }
 
+#if defined(MAP_FIXED_NOREPLACE)
     if (address) flags |= MAP_FIXED_NOREPLACE;
+#endif
     void *p = mmap(address, size, prot ? prot : PROT_READ | PROT_WRITE,
                    flags, -1, 0);
     if (p == MAP_FAILED) { SetLastError(8); return NULL; }
+#if !defined(MAP_FIXED_NOREPLACE)
+    /* No NOREPLACE flag (macOS): the address is only a hint, and plain MAP_FIXED
+     * would silently unmap whatever is already there. Without MAP_FIXED the
+     * kernel places the mapping elsewhere when the range is taken, so a result
+     * that is not the requested address means "that range was not free". */
+    if (address && p != address) { munmap(p, size); SetLastError(8); return NULL; }
+#endif
     return p;
 }
 
@@ -1002,7 +1033,12 @@ VOID OutputDebugStringA(LPCSTR str)
 
 VOID ExitProcess(UINT exitCode) { exit((int)exitCode); }
 
+#if defined(__APPLE__)
+VOID SecureZeroMemory(PVOID ptr, SIZE_T cnt) { memset_s(ptr, cnt, 0, cnt); }
+#else
 VOID SecureZeroMemory(PVOID ptr, SIZE_T cnt) { explicit_bzero(ptr, cnt); }
+#endif
+BOOL HeapValidate(HANDLE heap, DWORD flags, LPCVOID mem) { (void)heap; (void)flags; (void)mem; return TRUE; }
 
 unsigned int _clearfp(void)
 {
@@ -1250,7 +1286,19 @@ HANDLE CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
     SIZE_T size = ((SIZE_T)maxSizeHigh << 32) | maxSizeLow;
     if (size == 0) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
 
+#if defined(__linux__)
     int fd = memfd_create(name ? name : "xbox_map", 0);
+#else
+    /* No memfd on macOS: an anonymous POSIX shared-memory object. Unlinking it
+     * straight away leaves a nameless object that lives as long as the fd. The
+     * name must be unique and (on macOS) at most 31 characters. */
+    static volatile LONG s_shm_seq = 0;
+    char shm_name[32];
+    snprintf(shm_name, sizeof shm_name, "/ot%d_%d", (int)getpid(),
+             (int)InterlockedIncrement(&s_shm_seq));
+    int fd = shm_open(shm_name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0) shm_unlink(shm_name);
+#endif
     if (fd < 0) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
     if (ftruncate(fd, (off_t)size) != 0) {
         close(fd);
@@ -1319,8 +1367,9 @@ SIZE_T VirtualQuery(LPCVOID address, PMEMORY_BASIC_INFORMATION buffer, SIZE_T le
 
 BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
 {
-    struct sysinfo si;
     if (!b) return FALSE;
+#if defined(__linux__)
+    struct sysinfo si;
     if (sysinfo(&si) != 0) return FALSE;
 
     ULONGLONG unit = si.mem_unit ? si.mem_unit : 1;
@@ -1328,6 +1377,18 @@ BOOL GlobalMemoryStatusEx(LPMEMORYSTATUSEX b)
     b->ullAvailPhys     = (ULONGLONG)si.freeram   * unit;
     b->ullTotalPageFile = b->ullTotalPhys + (ULONGLONG)si.totalswap * unit;
     b->ullAvailPageFile = b->ullAvailPhys + (ULONGLONG)si.freeswap  * unit;
+#elif defined(__APPLE__)
+    uint64_t total = 0; size_t len = sizeof total;
+    if (sysctlbyname("hw.memsize", &total, &len, NULL, 0) != 0) return FALSE;
+    vm_statistics64_data_t vs; mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vs, &cnt) != KERN_SUCCESS)
+        return FALSE;
+    uint64_t avail = ((uint64_t)vs.free_count + vs.inactive_count) * (uint64_t)vm_page_size;
+    b->ullTotalPhys     = total;
+    b->ullAvailPhys     = avail;
+    b->ullTotalPageFile = total;
+    b->ullAvailPageFile = avail;
+#endif
     b->ullTotalVirtual  = b->ullTotalPhys;
     b->ullAvailVirtual  = b->ullAvailPhys;
     b->ullAvailExtendedVirtual = 0;
@@ -1452,5 +1513,201 @@ VOID RaiseException(DWORD code, DWORD flags, DWORD nargs, const ULONG_PTR *args)
 PVOID AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler)
 { (void)First; (void)Handler; return NULL; }   /* TODO: wire to sigaction */
 ULONG RemoveVectoredExceptionHandler(PVOID h) { (void)h; return 1; }
+
+
+/* ===================================================================== */
+/* Pointer interlocked, SRW locks, waitable timers, misc host queries    */
+/* ===================================================================== */
+
+PVOID InterlockedExchangePointer(PVOID volatile *p, PVOID v)
+{
+    return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST);
+}
+
+/* SRWLOCK: one lazily created pthread rwlock behind a pointer, so that the
+ * all-zero static initializer SRWLOCK_INIT works as on Windows. */
+static pthread_rwlock_t *srw_get(PSRWLOCK l)
+{
+    pthread_rwlock_t *rw = (pthread_rwlock_t *)__atomic_load_n(&l->Ptr, __ATOMIC_ACQUIRE);
+    if (rw) return rw;
+    pthread_rwlock_t *fresh = (pthread_rwlock_t *)malloc(sizeof *fresh);
+    pthread_rwlock_init(fresh, NULL);
+    PVOID expected = NULL;
+    if (__atomic_compare_exchange_n(&l->Ptr, &expected, (PVOID)fresh, 0,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return fresh;
+    pthread_rwlock_destroy(fresh);
+    free(fresh);
+    return (pthread_rwlock_t *)expected;
+}
+VOID InitializeSRWLock(PSRWLOCK l)             { l->Ptr = NULL; }
+VOID AcquireSRWLockExclusive(PSRWLOCK l)       { pthread_rwlock_wrlock(srw_get(l)); }
+VOID AcquireSRWLockShared(PSRWLOCK l)          { pthread_rwlock_rdlock(srw_get(l)); }
+VOID ReleaseSRWLockExclusive(PSRWLOCK l)       { pthread_rwlock_unlock(srw_get(l)); }
+VOID ReleaseSRWLockShared(PSRWLOCK l)          { pthread_rwlock_unlock(srw_get(l)); }
+BOOLEAN TryAcquireSRWLockExclusive(PSRWLOCK l) { return pthread_rwlock_trywrlock(srw_get(l)) == 0; }
+BOOLEAN TryAcquireSRWLockShared(PSRWLOCK l)    { return pthread_rwlock_tryrdlock(srw_get(l)) == 0; }
+
+/* Waitable timers. Arming starts a helper thread that sleeps on the timer's
+ * own lock/condvar until the due time, signals the object, and repeats for a
+ * periodic timer. Re-arming or cancelling bumps wt_gen, which retires the
+ * helper. A non-NULL completion routine is called from that helper thread (a
+ * real one runs as an APC on the arming thread; nothing in the runtime uses it). */
+typedef struct { w32_object *o; unsigned gen; struct timespec due; LONG period_ms;
+                 PTIMERAPCROUTINE fn; LPVOID arg; } wt_arm;
+
+static void *wt_thread(void *p)
+{
+    wt_arm a = *(wt_arm *)p;
+    free(p);
+    w32_object *o = a.o;
+    pthread_mutex_lock(&o->lock);
+    for (;;) {
+        int rc = 0;
+        while (o->wt_gen == a.gen && rc != ETIMEDOUT)
+            rc = pthread_cond_timedwait(&o->gate, &o->lock, &a.due);
+        if (o->wt_gen != a.gen) break;
+        o->signaled = 1;
+        pthread_cond_broadcast(&o->cond);
+        if (a.fn) {
+            pthread_mutex_unlock(&o->lock);
+            a.fn(a.arg, 0, 0);
+            pthread_mutex_lock(&o->lock);
+            if (o->wt_gen != a.gen) break;
+        }
+        if (a.period_ms <= 0) break;
+        a.due.tv_sec  += a.period_ms / 1000;
+        a.due.tv_nsec += (long)(a.period_ms % 1000) * 1000000L;
+        if (a.due.tv_nsec >= 1000000000L) { a.due.tv_sec++; a.due.tv_nsec -= 1000000000L; }
+    }
+    pthread_mutex_unlock(&o->lock);
+    obj_release(o);
+    return NULL;
+}
+
+HANDLE CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access)
+{
+    (void)sa; (void)name; (void)access;
+    w32_object *o = obj_alloc(K_WTIMER);
+    o->manual_reset = (flags & CREATE_WAITABLE_TIMER_MANUAL_RESET) ? 1 : 0;
+    return (HANDLE)o;
+}
+
+BOOL SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period,
+                      PTIMERAPCROUTINE fn, LPVOID arg, BOOL resume)
+{
+    (void)resume;
+    w32_object *o = (w32_object *)h;
+    if (!o || o->kind != K_WTIMER || !due) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    if (due->QuadPart < 0) {            /* relative, in 100 ns units */
+        ULONGLONG ns = (ULONGLONG)(-due->QuadPart) * 100ull;
+        t.tv_sec  += (time_t)(ns / 1000000000ull);
+        t.tv_nsec += (long)(ns % 1000000000ull);
+    } else if (due->QuadPart > 0) {     /* absolute FILETIME */
+        LONGLONG unix100 = due->QuadPart - (LONGLONG)FILETIME_EPOCH_DIFF;
+        t.tv_sec  = (time_t)(unix100 / 10000000);
+        t.tv_nsec = (long)(unix100 % 10000000) * 100L;
+    }
+    if (t.tv_nsec >= 1000000000L) { t.tv_sec++; t.tv_nsec -= 1000000000L; }
+
+    pthread_mutex_lock(&o->lock);
+    o->wt_gen++;
+    o->signaled = 0;
+    pthread_cond_broadcast(&o->gate);       /* retire a previous helper */
+    wt_arm *a = (wt_arm *)malloc(sizeof *a);
+    a->o = o; a->gen = o->wt_gen; a->due = t; a->period_ms = period; a->fn = fn; a->arg = arg;
+    InterlockedIncrement(&o->refcount);     /* the helper's reference */
+    pthread_mutex_unlock(&o->lock);
+
+    pthread_t th;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&attr, 256 * 1024);
+    int rc = pthread_create(&th, &attr, wt_thread, a);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) { free(a); obj_release(o); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    return TRUE;
+}
+
+BOOL CancelWaitableTimer(HANDLE h)
+{
+    w32_object *o = (w32_object *)h;
+    if (!o || o->kind != K_WTIMER) return FALSE;
+    pthread_mutex_lock(&o->lock);
+    o->wt_gen++;
+    pthread_cond_broadcast(&o->gate);
+    pthread_mutex_unlock(&o->lock);
+    return TRUE;
+}
+
+/* The runtime asks for stack traces and module bases for diagnostics only. */
+USHORT CaptureStackBackTrace(ULONG skip, ULONG count, PVOID *frames, PULONG hash)
+{
+    void *buf[128];
+    if (count > 128 - skip - 1) count = 128 - skip - 1;
+    int n = backtrace(buf, (int)(count + skip + 1));
+    int out = 0;
+    for (int i = (int)skip + 1; i < n; i++) frames[out++] = buf[i];
+    if (hash) *hash = 0;
+    return (USHORT)out;
+}
+
+HMODULE GetModuleHandleA(LPCSTR name)
+{
+    /* NULL means "this executable" (its load address). Looking another module up
+     * by name -- ntdll, kernel32, ... -- has no meaning here and fails, which is
+     * what callers that probe optional exports expect. */
+    if (name) return NULL;
+#if defined(__APPLE__)
+    return (HMODULE)_dyld_get_image_header(0);
+#else
+    extern char __executable_start;
+    return (HMODULE)&__executable_start;
+#endif
+}
+HMODULE GetModuleHandleW(LPCWSTR name) { return name ? NULL : GetModuleHandleA(NULL); }
+
+DWORD GetModuleFileNameA(HMODULE mod, LPSTR buf, DWORD size)
+{
+    (void)mod;
+    if (!buf || !size) return 0;
+#if defined(__APPLE__)
+    uint32_t n = size;
+    if (_NSGetExecutablePath(buf, &n) != 0) { buf[0] = 0; return 0; }
+#else
+    ssize_t n = readlink("/proc/self/exe", buf, size - 1);
+    if (n < 0) { buf[0] = 0; return 0; }
+    buf[n] = 0;
+#endif
+    return (DWORD)strlen(buf);
+}
+
+BOOL IsDebuggerPresent(void) { return FALSE; }
+VOID DebugBreak(void)        { __builtin_trap(); }
+
+DWORD GetTempPathA(DWORD size, LPSTR buf)
+{
+    const char *t = getenv("TMPDIR");
+    if (!t || !*t) t = "/tmp/";
+    size_t n = strlen(t);
+    int slash = t[n - 1] != '/';
+    if (n + slash + 1 > size) return (DWORD)(n + slash + 1);
+    memcpy(buf, t, n);
+    if (slash) buf[n++] = '/';
+    buf[n] = 0;
+    return (DWORD)n;
+}
+
+BOOL CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES sa)
+{
+    (void)sa;
+    if (mkdir(path, 0777) == 0) return TRUE;
+    SetLastError(errno == EEXIST ? ERROR_ALREADY_EXISTS : ERROR_PATH_NOT_FOUND);
+    return FALSE;
+}
 
 #endif /* !_WIN32 */

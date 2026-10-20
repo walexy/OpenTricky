@@ -5,18 +5,21 @@
 # MMIO interception via VEH (Vectored Exception Handling)
 # Push buffer parsing and command dispatch
 
-add_library(xbox_nv2a STATIC
+# OT_HEADLESS (macOS bring-up): the Direct3D 11 translator and the files that
+# hang off it (HD textures, button icons, the live push-buffer driver that
+# creates a host D3D8 device) are replaced by the null backend in ../d3d.
+set(NV2A_SOURCES
     nv2a_core.c
-    nv2a_pgraph_d3d11.c
-    nv2a_hdtex.c
-    nv2a_btnicons.c
     nv2a_vsh_cpu.c
     nv2a_psh.c
     nv2a_pb_replay.c
-    nv2a_live_pb.c
     nv2a_mmio_hook.c
     nv2a_pb_test.c
 )
+if(NOT OT_HEADLESS)
+    list(APPEND NV2A_SOURCES nv2a_pgraph_d3d11.c nv2a_hdtex.c nv2a_btnicons.c nv2a_live_pb.c)
+endif()
+add_library(xbox_nv2a STATIC ${NV2A_SOURCES})
 
 target_include_directories(xbox_nv2a PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

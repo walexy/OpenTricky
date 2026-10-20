@@ -538,5 +538,9 @@ int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return
 int  xa2_get_buffer_size(void)                        { return 0; }
 int  xa2_channels(void)                               { return 2; }
 int  xa2_target_queued(void)                          { return XA2_TARGET_QUEUED; }
+/* TODO(0.5): apu_core paces the mixer on this. Reporting 0 means "nothing queued",
+ * so the APU thread would mix flat out instead of at the sample rate. The headless
+ * null sink has to drain submitted samples in real time and report what is left. */
+int  xa2_queued(void)                                 { return 0; }
 
 #endif /* _WIN32 */

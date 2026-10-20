@@ -7,6 +7,7 @@
 #                                 (then python port/tools/make_release.py)
 #
 # Run from an MSYS2 UCRT64 shell (or use build.bat, which opens one for you).
+# On macOS (Darwin): headless bring-up only, see MACOS_PORT_PLAN.md.
 # Result: dist/OpenTricky/ -- "OpenTricky.exe" (the launcher, with its ui/ folder
 # and THIRD-PARTY-LICENSES.txt), "SSX Tricky.exe" and the DLLs it needs.
 # The extracted files (game_files/) and the translated code
@@ -14,6 +15,17 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
+
+# Host differences: the MSYS2 UCRT64 toolchain on Windows, Homebrew + Ninja on macOS.
+if [ "$(uname -s)" = "Darwin" ]; then
+    GEN="Ninja"; MAKE_TOOL="ninja"; NPROC="$(sysctl -n hw.ncpu)"
+    PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"; export PYTHON
+    OT_HEADLESS_OPT="-DOT_HEADLESS=ON -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl"
+else
+    GEN="MinGW Makefiles"; MAKE_TOOL="mingw32-make"; NPROC="$(nproc)"
+    PYTHON="${PYTHON:-python}"; export PYTHON
+    OT_HEADLESS_OPT=""
+fi
 
 ISO="${1:-}"
 if [ -z "$ISO" ] && [ ! -f game_files/default.xbe ]; then
@@ -23,7 +35,7 @@ fi
 
 echo "== [0/5] checking the tools"
 missing=""
-for t in gcc cmake mingw32-make python objdump; do
+for t in cmake "$MAKE_TOOL" "$PYTHON"; do
     command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
 done
 if [ -n "$missing" ]; then
@@ -34,7 +46,7 @@ if [ -n "$missing" ]; then
     echo "            mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow"
     exit 1
 fi
-python -c "import capstone, numpy, PIL" 2>/dev/null || {
+"$PYTHON" -c "import capstone, numpy, PIL" 2>/dev/null || {
     echo "Python needs capstone, numpy and pillow:"
     echo "  pacman -S --needed mingw-w64-ucrt-x86_64-python-capstone mingw-w64-ucrt-x86_64-python-numpy mingw-w64-ucrt-x86_64-python-pillow"
     exit 1
@@ -42,14 +54,14 @@ python -c "import capstone, numpy, PIL" 2>/dev/null || {
 
 if [ -n "$ISO" ]; then
     echo "== [1/5] reading your disc image"
-    python port/tools/extract_iso.py "$ISO" game_files
+    "$PYTHON" port/tools/extract_iso.py "$ISO" game_files
 else
     echo "== [1/5] game_files/default.xbe already there"
 fi
 
 echo "== [2/5] translating the game (about 3 minutes)"
 mkdir -p build
-PYTHON=python bash port/tools/fork_regen.sh
+bash port/tools/fork_regen.sh
 
 echo "== [3/5] compiling the game (5 to 10 minutes)"
 # Source paths are recorded relative to this folder: no user name in the exe.
@@ -57,13 +69,20 @@ WROOT="$(cygpath -m "$ROOT" 2>/dev/null || echo "$ROOT")"
 # Release or not (OT_RELEASE=1): switching recompiles everything once.
 REL=OFF; [ "${OT_RELEASE:-0}" = "1" ] && REL=ON
 if [ ! -f port/build/CMakeCache.txt ]; then
-    cmake -S port -B port/build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release \
+    cmake -S port -B port/build -G "$GEN" -DCMAKE_BUILD_TYPE=Release $OT_HEADLESS_OPT \
         -DCMAKE_C_FLAGS_RELEASE="-O3 -g -DNDEBUG" \
         -DCMAKE_C_FLAGS="-Wno-error=int-conversion -ffile-prefix-map=$WROOT/=" -DOT_RELEASE=$REL
 else
     cmake -S port -B port/build -DOT_RELEASE=$REL >/dev/null
 fi
-cmake --build port/build -j "$(nproc)"
+cmake --build port/build -j "$NPROC"
+
+if [ "$(uname -s)" = "Darwin" ]; then
+    # Headless bring-up: no launcher, no DLL bundling (steps 4 and 5).
+    mkdir -p dist/headless && cp port/build/ssx_tricky* dist/headless/ 2>/dev/null || true
+    echo "Done (macOS headless): see dist/headless/. Run it with --headless --direct <iso>."
+    exit 0
+fi
 
 echo "== [4/5] compiling the launcher, OpenTricky.exe (about 2 minutes the first time)"
 # Its libraries (SDL3, FreeType, RmlUi) are built from port/third_party.
@@ -73,7 +92,7 @@ if [ ! -f port/build-launcher/CMakeCache.txt ]; then
 else
     cmake -S port/launcher/app -B port/build-launcher -DOT_RELEASE=$REL >/dev/null
 fi
-cmake --build port/build-launcher -j "$(nproc)"
+cmake --build port/build-launcher -j "$NPROC"
 
 echo "== [5/5] dist/OpenTricky"
 EXE="port/build/SSX Tricky.exe"

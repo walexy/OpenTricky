@@ -1192,4 +1192,5 @@ void xbox_diag_stop(void)
 #else  /* !_WIN32 */
 void xbox_diag_start(void) {}
 void xbox_diag_stop(void) {}
+int  xbox_diag_watch_host_write(uint32_t va, uint32_t len, int begin) { (void)va; (void)len; (void)begin; return 0; }
 #endif

@@ -35,6 +35,7 @@
 
 #include "aci_mmio.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Register file. Reads and writes land here; the side effects below are what

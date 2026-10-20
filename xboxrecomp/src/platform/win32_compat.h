@@ -529,6 +529,63 @@ static inline MMRESULT waveOutWrite(HWAVEOUT h, WAVEHDR *hdr, UINT sz)
 static inline MMRESULT waveOutReset(HWAVEOUT h) { (void)h; return MMSYSERR_NOERROR; }
 static inline MMRESULT waveOutClose(HWAVEOUT h) { (void)h; return MMSYSERR_NOERROR; }
 
+
+/* ---- Interlocked (pointer), SRW locks, waitable timers ---------------- */
+PVOID InterlockedExchangePointer(PVOID volatile *p, PVOID v);
+
+typedef struct { PVOID Ptr; } SRWLOCK, *PSRWLOCK;
+#define SRWLOCK_INIT { NULL }
+VOID    InitializeSRWLock(PSRWLOCK l);
+VOID    AcquireSRWLockExclusive(PSRWLOCK l);
+VOID    AcquireSRWLockShared(PSRWLOCK l);
+VOID    ReleaseSRWLockExclusive(PSRWLOCK l);
+VOID    ReleaseSRWLockShared(PSRWLOCK l);
+BOOLEAN TryAcquireSRWLockExclusive(PSRWLOCK l);
+BOOLEAN TryAcquireSRWLockShared(PSRWLOCK l);
+
+#define TIMER_ALL_ACCESS                    0x001F0003u
+#define CREATE_WAITABLE_TIMER_MANUAL_RESET  0x00000001u
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002u
+typedef VOID (*PTIMERAPCROUTINE)(LPVOID arg, DWORD lo, DWORD hi);
+HANDLE CreateWaitableTimerExW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name, DWORD flags, DWORD access);
+BOOL   SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period,
+                        PTIMERAPCROUTINE fn, LPVOID arg, BOOL resume);
+BOOL   CancelWaitableTimer(HANDLE h);
+
+/* ---- Diagnostics / module / path queries ------------------------------ */
+USHORT  CaptureStackBackTrace(ULONG skip, ULONG count, PVOID *frames, PULONG hash);
+HMODULE GetModuleHandleA(LPCSTR name);
+HMODULE GetModuleHandleW(LPCWSTR name);
+#define GetModuleHandle GetModuleHandleA
+DWORD   GetModuleFileNameA(HMODULE mod, LPSTR buf, DWORD size);
+BOOL    IsDebuggerPresent(void);
+BOOL    HeapValidate(HANDLE heap, DWORD flags, LPCVOID mem);
+VOID    DebugBreak(void);
+DWORD   GetTempPathA(DWORD size, LPSTR buf);
+BOOL    CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES sa);
+#ifndef ERROR_ALREADY_EXISTS
+#define ERROR_ALREADY_EXISTS 183u
+#endif
+#ifndef ERROR_PATH_NOT_FOUND
+#define ERROR_PATH_NOT_FOUND 3u
+#endif
+#ifndef ERROR_NOT_OWNER
+#define ERROR_NOT_OWNER 288u
+#endif
+#ifndef MAXIMUM_WAIT_OBJECTS
+#define MAXIMUM_WAIT_OBJECTS 64
+#endif
+
+/* VirtualQuery state/type values */
+#define MEM_FREE    0x10000u
+#define MEM_PRIVATE 0x20000u
+#define MEM_MAPPED  0x40000u
+#define MEM_IMAGE   0x1000000u
+
+/* 64-bit stdio seeks (MSVC names) */
+#define _fseeki64 fseeko
+#define _ftelli64 ftello
+
 #ifdef __cplusplus
 }
 #endif

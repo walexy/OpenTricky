@@ -1767,6 +1767,16 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     return STATUS_SUCCESS;
 }
 
+
+/* Bookkeeping the Windows backend keeps for ISO-backed handles and directory
+ * enumeration contexts (see the _WIN32 branch). Handles here are pointers to
+ * heap objects rather than recycled small integers, so there is nothing to
+ * release; callers see "not an ISO handle" and "no directory context". */
+int  xbox_iso_handle_release(HANDLE Handle) { (void)Handle; return 0; }
+int  xbox_iso_handles_in_use(void)          { return 0; }
+BOOL xbox_dir_context_bound(HANDLE FileHandle) { (void)FileHandle; return FALSE; }
+void xbox_dir_context_release(HANDLE FileHandle) { (void)FileHandle; }
+
 #endif /* _WIN32 */
 
 /* ======================================================================== */

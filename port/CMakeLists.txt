@@ -15,7 +15,9 @@ project(ssx_tricky C)
 
 # The game's icon and manifest (src/ssx_recomp.rc.in) need the resource
 # compiler (windres with MinGW, rc.exe with MSVC).
-enable_language(RC)
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -49,6 +51,7 @@ if(NOT RECOMP_GEN_SOURCES)
         "stored in this repository -- see docs/building.md.")
 endif()
 
+if(WIN32)
 # ── Icon ───────────────────────────────────────────────────────
 # Made at build time from the player's own game files, in the build directory
 # only (tools/make_icon.py: the Garibaldi track badge by default);
@@ -101,6 +104,7 @@ set(SSX_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 configure_file(src/ssx_recomp.rc.in "${CMAKE_CURRENT_BINARY_DIR}/ssx_recomp.rc" @ONLY)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/ssx_recomp.rc" PROPERTIES
     OBJECT_DEPENDS "${SSX_APP_ICON};${SSX_HDTEX_INDEX};${SSX_BTNICON_FILES};${SSX_SRC_DIR}/version.h;${SSX_SRC_DIR}/version_info.rc")
+endif()
 
 set(GAME_SOURCES
     src/main.c
@@ -109,7 +113,6 @@ set(GAME_SOURCES
     src/controls.c
     src/hostui.c
     src/crashreport.c
-    "${CMAKE_CURRENT_BINARY_DIR}/ssx_recomp.rc"
     src/recomp_manual.c
     src/pass_tags.c
     src/fps_cap.c
@@ -159,10 +162,12 @@ message(STATUS "Build identity for crash reports: ${SSX_BUILD_ID}")
 set_source_files_properties(src/crashreport.c PROPERTIES
     COMPILE_DEFINITIONS "SSX_BUILD_ID=\"${SSX_BUILD_ID}\"")
 
-add_executable(${PROJECT_NAME} WIN32
-    ${GAME_SOURCES}
-    ${RECOMP_GEN_SOURCES}
-)
+if(WIN32)
+    list(APPEND GAME_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/ssx_recomp.rc")
+    add_executable(${PROJECT_NAME} WIN32 ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
+else()
+    add_executable(${PROJECT_NAME} ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
+endif()
 
 # Name the executable after the title in the XBE certificate ("SSX Tricky"),
 # falling back to that name when no XBE is present.
@@ -187,13 +192,18 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${XBOXRECOMP_DIR}/include
 )
 
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    d3d11
-    dxgi
-    dxguid
-    $<IF:$<BOOL:${MINGW}>,xinput1_4,xinput>   # XInput 1.4 ships with Windows
-    winmm
-    ws2_32      # netplay over UDP (XBOX_NET)
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        d3d11
+        dxgi
+        dxguid
+        $<IF:$<BOOL:${MINGW}>,xinput1_4,xinput>   # XInput 1.4 ships with Windows
+        winmm
+        ws2_32      # netplay over UDP (XBOX_NET)
+elseif(APPLE)
+    find_package(Threads REQUIRED)
+    target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads m)
+endif()
     # Launcher: controls dialog, file/folder pickers, shell
     comctl32
     ole32
