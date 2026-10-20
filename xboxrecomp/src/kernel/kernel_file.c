@@ -1772,6 +1772,14 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
  * enumeration contexts (see the _WIN32 branch). Handles here are pointers to
  * heap objects rather than recycled small integers, so there is nothing to
  * release; callers see "not an ISO handle" and "no directory context". */
+/* Host-rewritten files (xbox_file_hook.h): the POSIX backend accepts the hooks and
+ * never applies them, so OpenTricky's rewritten data files (button legends, ...)
+ * are served as the disc has them. Headless bring-up does not need them. */
+void xbox_file_add_hook(xbox_file_hook_match_fn match, xbox_file_hook_rewrite_fn rewrite)
+{ (void)match; (void)rewrite; }
+void xbox_file_set_hook(xbox_file_hook_match_fn match, xbox_file_hook_rewrite_fn rewrite)
+{ (void)match; (void)rewrite; }
+
 int  xbox_iso_handle_release(HANDLE Handle) { (void)Handle; return 0; }
 int  xbox_iso_handles_in_use(void)          { return 0; }
 BOOL xbox_dir_context_bound(HANDLE FileHandle) { (void)FileHandle; return FALSE; }

@@ -131,31 +131,44 @@ int main(void)
               d3d8_PresentSeq() - seq0, frames);
     }
 
-    /* ---- guest framebuffer dump: what the movie player writes through LockRect ---- */
+    /* ---- guest framebuffer dump: what the movie player writes through LockRect ----
+     * Two buffers, as the title double-buffers its video: a present must show the one
+     * that is not being written right now and never an older frame (the choice is
+     * ported from the real D3D layer). A is seeded, then B is rewritten, then both idle. */
     {
         extern void d3d8_SetGuestFramebuffer(const void *src, unsigned pitch, unsigned w, unsigned h);
+        extern void d3d8_SetGuestFramebufferAlt(const void *alt);
         extern void d3d8_NoteGuestFramebufferLock(void);
         extern void d3d8_PresentFrame(void);
-        static uint8_t fb[8 * 64];
-        for (int y = 0; y < 8; y++) for (int x = 0; x < 16; x++) {     /* X8R8G8B8: B G R X */
-            uint8_t *px = fb + y * 64 + x * 4; px[0] = (uint8_t)(x * 10); px[1] = (uint8_t)(y * 20); px[2] = 200; px[3] = 0;
-        }
-        d3d8_SetGuestFramebuffer(fb, 64, 16, 8);
-        d3d8_NoteGuestFramebufferLock();
-        d3d8_PresentFrame();
-        char path[256]; snprintf(path, sizeof path, "%s/fb_00000.ppm", dumpdir);
-        FILE *f = fopen(path, "rb"); uint8_t hdr[16] = {0}, px[3] = {0};
-        int ok = 0;
-        if (f) {
-            char magic[3] = {0}; unsigned w = 0, h = 0, mx = 0;
-            if (fscanf(f, "%2s %u %u %u", magic, &w, &h, &mx) == 4 && fgetc(f) == '\n') {
-                fseek(f, 3 * (3 * 16 + 5), SEEK_CUR);        /* pixel (5, 3) */
-                ok = fread(px, 1, 3, f) == 3 && w == 16 && h == 8 && mx == 255 && magic[0] == 'P' && magic[1] == '6';
+        static uint8_t fa[16 * 64], fb[16 * 64];
+        #define FILL(buf, r, g, b) do { for (int y = 0; y < 8; y++) for (int x = 0; x < 16; x++) { \
+            uint8_t *px = (buf) + y * 64 + x * 4; px[0] = (b); px[1] = (g); px[2] = (r); px[3] = 0; } } while (0)
+        FILL(fa, 200, 60, 50);                 /* X8R8G8B8 in memory: B G R X */
+        FILL(fb, 10, 20, 30);
+        d3d8_SetGuestFramebuffer(fa, 64, 16, 8);
+        d3d8_SetGuestFramebufferAlt(fb);
+
+        unsigned want[4][3] = { {200, 60, 50}, {200, 60, 50}, {111, 112, 113}, {0} };
+        const char *what[3] = { "seeding present shows A", "B being rewritten: A is held, B is not shown", "both idle: the newer B is shown" };
+        for (int step = 0; step < 3; step++) {
+            if (step == 1) FILL(fb, 111, 112, 113);
+            d3d8_NoteGuestFramebufferLock();
+            d3d8_PresentFrame();
+            char path[256]; snprintf(path, sizeof path, "%s/fb_%05d.ppm", dumpdir, step);
+            FILE *f = fopen(path, "rb");
+            uint8_t px[3] = {0}; int ok = 0;
+            if (f) {
+                char magic[3] = {0}; unsigned w = 0, h = 0, mx = 0;
+                if (fscanf(f, "%2s %u %u %u", magic, &w, &h, &mx) == 4 && fgetc(f) == '\n') {
+                    fseek(f, 3 * (3 * 16 + 5), SEEK_CUR);          /* pixel (5, 3) */
+                    ok = fread(px, 1, 3, f) == 3 && w == 16 && h == 8 && mx == 255 && magic[0] == 'P' && magic[1] == '6';
+                }
+                fclose(f);
             }
-            fclose(f);
+            CHECK(ok && px[0] == want[step][0] && px[1] == want[step][1] && px[2] == want[step][2],
+                  "framebuffer dump %d (%s): pixel (5,3) = %u,%u,%u, want %u,%u,%u", step, what[step],
+                  px[0], px[1], px[2], want[step][0], want[step][1], want[step][2]);
         }
-        (void)hdr;
-        CHECK(ok && px[0] == 200 && px[1] == 60 && px[2] == 50, "framebuffer dump: pixel (5,3) = %u,%u,%u, want 200,60,50 (R,G,B)", px[0], px[1], px[2]);
     }
 
     /* ---- null audio sink: the APU thread must run at the sample rate, not flat out ---- */

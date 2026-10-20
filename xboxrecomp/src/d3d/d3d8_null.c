@@ -24,6 +24,8 @@
 #include "d3d8_xbox.h"
 #include "../nv2a/nv2a_pgraph_d3d11.h"
 #include "../nv2a/nv2a_regs.h"
+#include "../nv2a/nv2a_btnicons.h"
+#include "../nv2a/nv2a_hdtex.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,7 +86,54 @@ static uint32_t report_value(void)
 /* guest framebuffer dump                                                  */
 /* ======================================================================= */
 
-static void dump_guest_fb(void)
+/* Cheap freshness probe and buffer choice, ported from d3d8_device.c
+ * (guest_fb_sig / guest_fb_freshest): the movie player alternates between two
+ * buffers, and a present must never show the one being blitted into right now
+ * nor go back to an older frame. NULL = "hold". */
+static unsigned guest_fb_sig(const void *base, unsigned pitch, unsigned h)
+{
+    const unsigned char *p = (const unsigned char *)base;
+    unsigned sig = 2166136261u, y;
+    if (!p) return 0;
+    for (y = 0; y < h; y += 16) {
+        const unsigned char *r = p + (size_t)y * pitch;
+        for (unsigned k = 0; k < 64; k += 4) { sig ^= r[(pitch / 2) + k]; sig *= 16777619u; }
+    }
+    return sig;
+}
+
+static const void *guest_fb_freshest(void)
+{
+    static unsigned sig_a, sig_b, gen_a, gen_b, now, shown;
+    static int seeded;
+    const void *pick;
+    unsigned a, b, cand_gen;
+    int a_busy, b_busy;
+
+    if (!g_fb_alt) return g_fb_src;
+    a = guest_fb_sig(g_fb_src, g_fb_pitch, g_fb_h);
+    b = guest_fb_sig(g_fb_alt, g_fb_pitch, g_fb_h);
+    if (!seeded) { seeded = 1; sig_a = a; sig_b = b; return g_fb_src; }
+
+    now++;
+    if (a != sig_a) gen_a = now;
+    if (b != sig_b) gen_b = now;
+    sig_a = a; sig_b = b;
+    a_busy = (gen_a == now);
+    b_busy = (gen_b == now);
+
+    if (a_busy && b_busy)      { pick = NULL;     cand_gen = 0; }
+    else if (a_busy)           { pick = g_fb_alt; cand_gen = gen_b; }
+    else if (b_busy)           { pick = g_fb_src; cand_gen = gen_a; }
+    else if (gen_a >= gen_b)   { pick = g_fb_src; cand_gen = gen_a; }
+    else                       { pick = g_fb_alt; cand_gen = gen_b; }
+
+    if (pick && cand_gen < shown) pick = NULL;      /* would go backwards */
+    else if (pick)                shown = cand_gen;
+    return pick;
+}
+
+static void dump_guest_fb(const void *fb)
 {
     static const char *dir; static int checked, max_frames = 60, dumped;
     static unsigned last_locks = ~0u;
@@ -95,7 +144,7 @@ static void dump_guest_fb(void)
         checked = 1;
     }
     if (!dir || !*dir || dumped >= max_frames) return;
-    if (!g_fb_src || !g_fb_w || !g_fb_h || g_fb_locks == last_locks) return;   /* a new decoded frame only */
+    if (!fb || !g_fb_w || !g_fb_h || g_fb_locks == last_locks) return;   /* a new decoded frame only */
     last_locks = g_fb_locks;
 
     char path[1024];
@@ -104,7 +153,7 @@ static void dump_guest_fb(void)
     if (!f) return;
     fprintf(f, "P6\n%u %u\n255\n", g_fb_w, g_fb_h);
     for (unsigned y = 0; y < g_fb_h; y++) {
-        const uint8_t *row = (const uint8_t *)g_fb_src + (size_t)y * g_fb_pitch;
+        const uint8_t *row = (const uint8_t *)fb + (size_t)y * g_fb_pitch;
         for (unsigned x = 0; x < g_fb_w; x++) {          /* X8R8G8B8, little endian: B G R X */
             uint8_t px[3] = { row[x * 4 + 2], row[x * 4 + 1], row[x * 4 + 0] };
             fwrite(px, 1, 3, f);
@@ -118,13 +167,16 @@ static void dump_guest_fb(void)
 /* d3d8_* : present, window, display options                               */
 /* ======================================================================= */
 
+int d3d8_GuestFramebufferActive(void);
+
 /* One frame has been presented (called from the flip / clear paths below and,
  * as the video fallback, from nv2a_live_pb.c). */
 void d3d8_PresentFrame(void)
 {
     g_present_seq++;
     g_last_present_ms = now_ms();
-    dump_guest_fb();
+    if (g_fb_src && d3d8_GuestFramebufferActive())     /* what the real present shows */
+        dump_guest_fb(guest_fb_freshest());
 }
 
 unsigned d3d8_PresentSeq(void)   { return g_present_seq; }
@@ -140,7 +192,7 @@ int  d3d8_HasGuestFramebuffer(void)      { return g_fb_src != NULL; }
 unsigned d3d8_GuestFramebufferLockCount(void) { return g_fb_locks; }
 int  d3d8_GuestFramebufferActive(void)
 {
-    return g_fb_src && (g_present_seq - g_fb_lock_seq) < GUEST_FB_IDLE_PRESENTS;
+    return g_fb_src && g_fb_locks != 0 && (g_present_seq - g_fb_lock_seq) <= GUEST_FB_IDLE_PRESENTS;
 }
 
 void d3d8_RequestScreenshot(const wchar_t *path) { (void)path; }
@@ -173,16 +225,18 @@ int   d3d8_OcclusionPoll(int h, unsigned long long *samples) { (void)h; if (samp
 float d3d8_OcclusionScale(void) { return 1.0f; }
 
 /* The host device the translator would draw into. The title never calls
- * Direct3DCreate8 (its D3D8 is linked into the game); nv2a_live_pb.c creates one.
- * Here the "device" is a handle that is never dereferenced by anything but
- * CreateDevice below. */
-static IDirect3DDevice8 *g_null_dev = (IDirect3DDevice8 *)(uintptr_t)0x1;
+ * Direct3DCreate8 (its D3D8 is linked into the game); nv2a_live_pb.c creates one
+ * and only checks the result for NULL. The "device" is a non-NULL token that
+ * nothing may dereference: xbox_GetD3DDevice() below returns NULL, so a caller
+ * that guards with `if (dev)` before going through lpVtbl cannot crash on it
+ * (the AddRef/Release slots of the objects handed out are NULL too). */
+static IDirect3DDevice8 *const g_null_dev_token = (IDirect3DDevice8 *)(uintptr_t)0x1;
 
 static HRESULT __stdcall null_CreateDevice(IDirect3D8 *self, UINT adapter, DWORD type, HWND wnd, DWORD flags,
                                            D3DPRESENT_PARAMETERS *pp, IDirect3DDevice8 **out)
 {
     (void)self; (void)adapter; (void)type; (void)wnd; (void)flags; (void)pp;
-    *out = g_null_dev;
+    *out = g_null_dev_token;
     return 0;   /* S_OK */
 }
 
@@ -196,7 +250,7 @@ IDirect3D8 *xbox_Direct3DCreate8(UINT sdk)
     obj.lpVtbl = &vtbl;
     return &obj;
 }
-IDirect3DDevice8 *xbox_GetD3DDevice(void) { return g_null_dev; }
+IDirect3DDevice8 *xbox_GetD3DDevice(void) { return NULL; }   /* no device: nothing draws */
 
 HRESULT d3d8_CreateTextureFromLevels(UINT w, UINT h, UINT levels, const void *const *bits,
                                      IDirect3DTexture8 **ppTex)
@@ -265,6 +319,7 @@ void nv2a_drawlog_arm(int frames)  { (void)frames; }
 int pgraph_d3d11_method(int subchannel, uint32_t method, uint32_t param)
 {
     (void)subchannel;
+    if (!g_initialized) return 0;     /* as the translator: not handled before init */
     g_stats.methods_handled++;
 
     switch (method) {
@@ -323,3 +378,26 @@ int pgraph_d3d11_method(int subchannel, uint32_t method, uint32_t param)
         return 1;
     }
 }
+
+/* ======================================================================= */
+/* OpenTricky texture features that live in the dropped translator side    */
+/* ======================================================================= */
+
+/* Button icons (nv2a_btnicons.c) and HD textures (nv2a_hdtex.c) replace what the
+ * renderer samples. The port still configures and queries them: all off here. */
+int btnicons_on(void)                 { return 0; }
+int btnicons_wide_bumpers(void)       { return 0; }
+int btnicons_bumper_text_dy(void)     { return 0; }
+int btnicons_ps2(void)                { return 0; }
+int btnicons_cfg_style(void)          { return 0; }
+int btnicons_point(const IDirect3DTexture8 *t) { (void)t; return 0; }
+IDirect3DTexture8 *btnicons_compose(const uint8_t *l0, uint32_t n0, uint32_t w, uint32_t h,
+                                    uint32_t color, IDirect3DTexture8 *guest)
+{ (void)l0; (void)n0; (void)w; (void)h; (void)color; (void)guest; return NULL; }
+int btnicons_ps2_shape(int i, unsigned *shape, float uv[4], float game_wh[2], float ps2_wh[2])
+{ (void)i; (void)shape; (void)uv; (void)game_wh; (void)ps2_wh; return 0; }
+int btnicons_lesson_shape(int i, unsigned *shape, float game[6], float pic[6])
+{ (void)i; (void)shape; (void)game; (void)pic; return 0; }
+int btnicons_lesson_mark(int row, float *dx, float *dy)
+{ (void)row; (void)dx; (void)dy; return 0; }
+void hdtex_set_builtin_index(const char *text, size_t len) { (void)text; (void)len; }
