@@ -286,7 +286,14 @@ static void obj_release(w32_object *o)
 
 /* Handles that are not pointers to our objects (the file layer's virtual ISO handles carry a tag in
  * the bits above any user-space address): never dereferenced here. */
-static int foreign_handle(HANDLE h) { return ((uintptr_t)h >> 47) != 0 && h != INVALID_HANDLE_VALUE; }
+static int foreign_handle(HANDLE h)
+{
+    /* The tag sits in the top byte (0x15 for the ISO handles); no user-space address, on 47- or
+     * 48-bit address spaces, has any of those bits set. */
+    return ((uintptr_t)h >> 56) != 0 && h != INVALID_HANDLE_VALUE;
+}
+/* A handle as one of our objects, or NULL when it is not one: pseudo handles, virtual handles. */
+#define AS_OBJ(h) (foreign_handle(h) ? (w32_object *)NULL : (w32_object *)(h))
 
 /* ---- fd-backed file handle (for the file-I/O HLE) -------------------- */
 HANDLE w32_open_handle(int fd, const char *host_path)
@@ -299,14 +306,14 @@ HANDLE w32_open_handle(int fd, const char *host_path)
 
 int w32_handle_fd(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (foreign_handle(h)) return -1;
     return (o && o->kind == K_FILE) ? o->fd : -1;
 }
 
 const char *w32_handle_path(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (foreign_handle(h)) return NULL;
     return (o && o->kind == K_FILE) ? o->file_path : NULL;
 }
@@ -316,7 +323,7 @@ BOOL CloseHandle(HANDLE h)
     if (!h || h == PSEUDO_CURRENT_THREAD || h == PSEUDO_CURRENT_PROCESS ||
         h == INVALID_HANDLE_VALUE || foreign_handle(h))
         return TRUE;
-    obj_release((w32_object *)h);
+    obj_release(AS_OBJ(h));
     return TRUE;
 }
 
@@ -328,7 +335,8 @@ BOOL DuplicateHandle(HANDLE srcProc, HANDLE src, HANDLE dstProc, PHANDLE dst,
     if (src == PSEUDO_CURRENT_THREAD)  src = GetCurrentThread();
     if (src == PSEUDO_CURRENT_PROCESS) { *dst = src; return TRUE; }
     if (src == PSEUDO_CURRENT_THREAD || !src) { *dst = src; return TRUE; }
-    w32_object *o = (w32_object *)src;
+    w32_object *o = AS_OBJ(src);
+    if (!o) { *dst = NULL; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }   /* not one of ours */
     InterlockedIncrement(&o->refcount);
     *dst = src;
     if (options & DUPLICATE_CLOSE_SOURCE)
@@ -416,7 +424,8 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms)
 {
     if (!h || h == PSEUDO_CURRENT_THREAD || h == PSEUDO_CURRENT_PROCESS)
         return WAIT_OBJECT_0;
-    return wait_single((w32_object *)h, ms);
+    if (foreign_handle(h)) { SetLastError(ERROR_INVALID_HANDLE); return WAIT_FAILED; }   /* e.g. a virtual ISO handle */
+    return wait_single(AS_OBJ(h), ms);
 }
 
 DWORD WaitForSingleObjectEx(HANDLE h, DWORD ms, BOOL alertable)
@@ -488,7 +497,7 @@ HANDLE CreateEventW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, BOOL initialStat
 
 BOOL SetEvent(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_EVENT) return FALSE;
     pthread_mutex_lock(&o->lock);
     o->signaled = 1;
@@ -499,7 +508,7 @@ BOOL SetEvent(HANDLE h)
 
 BOOL ResetEvent(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_EVENT) return FALSE;
     pthread_mutex_lock(&o->lock);
     o->signaled = 0;
@@ -509,7 +518,7 @@ BOOL ResetEvent(HANDLE h)
 
 BOOL PulseEvent(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_EVENT) return FALSE;
     pthread_mutex_lock(&o->lock);
     o->signaled = 1;
@@ -539,7 +548,7 @@ HANDLE CreateSemaphoreW(LPSECURITY_ATTRIBUTES sa, LONG initial, LONG maximum, LP
 
 BOOL ReleaseSemaphore(HANDLE h, LONG releaseCount, PLONG previousCount)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_SEM) return FALSE;
     pthread_mutex_lock(&o->lock);
     if (previousCount) *previousCount = (LONG)o->sem_count;
@@ -569,7 +578,7 @@ HANDLE CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL initialOwner, LPCWSTR name)
 
 BOOL ReleaseMutex(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_MUTEX) return FALSE;
     pthread_mutex_lock(&o->lock);
     if (o->mtx_owner == GetCurrentThreadId() && --o->mtx_recursion <= 0) {
@@ -661,7 +670,7 @@ VOID ExitThread(DWORD exitCode)
 
 BOOL GetExitCodeThread(HANDLE h, LPDWORD exitCode)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_THREAD || !exitCode) return FALSE;
     pthread_mutex_lock(&o->lock);
     *exitCode = o->exited ? o->exit_code : STILL_ACTIVE;
@@ -671,7 +680,7 @@ BOOL GetExitCodeThread(HANDLE h, LPDWORD exitCode)
 
 DWORD ResumeThread(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_THREAD) return (DWORD)-1;
     pthread_mutex_lock(&o->lock);
     DWORD prev = (DWORD)o->suspend_count;
@@ -685,7 +694,7 @@ DWORD SuspendThread(HANDLE h)
 {
     /* True mid-run suspension is not supported on POSIX; only the
      * CREATE_SUSPENDED start gate is. Track the count for ResumeThread. */
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_THREAD) return (DWORD)-1;
     pthread_mutex_lock(&o->lock);
     DWORD prev = (DWORD)o->suspend_count;
@@ -696,7 +705,7 @@ DWORD SuspendThread(HANDLE h)
 
 BOOL TerminateThread(HANDLE h, DWORD exitCode)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_THREAD) return FALSE;
     pthread_cancel(o->thread);
     pthread_mutex_lock(&o->lock);
@@ -710,14 +719,14 @@ BOOL TerminateThread(HANDLE h, DWORD exitCode)
 
 BOOL SetThreadPriority(HANDLE h, int priority)
 {
-    w32_object *o = (h == PSEUDO_CURRENT_THREAD) ? t_self_obj : (w32_object *)h;
+    w32_object *o = (h == PSEUDO_CURRENT_THREAD) ? t_self_obj : AS_OBJ(h);
     if (o && o->kind == K_THREAD) o->priority = priority;
     return TRUE;   /* real RT priorities need privileges; tracked only */
 }
 
 int GetThreadPriority(HANDLE h)
 {
-    w32_object *o = (h == PSEUDO_CURRENT_THREAD) ? t_self_obj : (w32_object *)h;
+    w32_object *o = (h == PSEUDO_CURRENT_THREAD) ? t_self_obj : AS_OBJ(h);
     return (o && o->kind == K_THREAD) ? o->priority : THREAD_PRIORITY_NORMAL;
 }
 
@@ -725,7 +734,7 @@ VOID SwitchToThread(void) { sched_yield(); }
 
 DWORD QueueUserAPC(PAPCFUNC func, HANDLE thread, ULONG_PTR data)
 {
-    w32_object *o = (thread == PSEUDO_CURRENT_THREAD) ? t_self_obj : (w32_object *)thread;
+    w32_object *o = (thread == PSEUDO_CURRENT_THREAD) ? t_self_obj : AS_OBJ(thread);
     if (!o || o->kind != K_THREAD) return 0;
     pthread_mutex_lock(&o->lock);
     DWORD ok = 0;
@@ -820,7 +829,7 @@ BOOL CreateTimerQueueTimer(PHANDLE newTimer, HANDLE timerQueue,
 BOOL ChangeTimerQueueTimer(HANDLE timerQueue, HANDLE timer, ULONG dueTime, ULONG period)
 {
     (void)timerQueue;
-    w32_object *o = (w32_object *)timer;
+    w32_object *o = AS_OBJ(timer);
     if (!o || o->kind != K_TIMER) return FALSE;
     o->timer_due    = dueTime;
     o->timer_period = period;
@@ -830,7 +839,7 @@ BOOL ChangeTimerQueueTimer(HANDLE timerQueue, HANDLE timer, ULONG dueTime, ULONG
 BOOL DeleteTimerQueueTimer(HANDLE timerQueue, HANDLE timer, HANDLE completionEvent)
 {
     (void)timerQueue;
-    w32_object *o = (w32_object *)timer;
+    w32_object *o = AS_OBJ(timer);
     if (!o || o->kind != K_TIMER) return FALSE;
     o->timer_cancel = 1;
     if (completionEvent) SetEvent(completionEvent);
@@ -1352,7 +1361,7 @@ HANDLE CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES sa, DWORD protect,
 LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access, DWORD offHigh, DWORD offLow,
                        SIZE_T count, LPVOID baseAddr)
 {
-    w32_object *o = (w32_object *)mapping;
+    w32_object *o = AS_OBJ(mapping);
     if (!o || o->kind != K_FILEMAP) { SetLastError(ERROR_INVALID_HANDLE); return NULL; }
 
     off_t  off = ((off_t)offHigh << 32) | offLow;
@@ -1627,7 +1636,7 @@ BOOL SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period,
                       PTIMERAPCROUTINE fn, LPVOID arg, BOOL resume)
 {
     (void)resume;
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_WTIMER || !due) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
 
     struct timespec t;
@@ -1665,7 +1674,7 @@ BOOL SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period,
 
 BOOL CancelWaitableTimer(HANDLE h)
 {
-    w32_object *o = (w32_object *)h;
+    w32_object *o = AS_OBJ(h);
     if (!o || o->kind != K_WTIMER) return FALSE;
     pthread_mutex_lock(&o->lock);
     o->wt_gen++;

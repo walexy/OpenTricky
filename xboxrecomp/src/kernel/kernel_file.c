@@ -26,6 +26,7 @@ BOOL xbox_path_split_game_disc(const char* xbox_path, const char** remainder);
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 #if !defined(_WIN32)
 #include <fcntl.h>
@@ -1039,8 +1040,16 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
                 return STATUS_NO_MORE_FILES;
             }
             {
-                xdvdfs_entry *e = &ents[ih->enum_index++];
+                xdvdfs_entry *e = &ents[ih->enum_index];
                 size_t name_len = strlen(e->name);
+                /* never write past the caller's buffer (the entry is the fixed part plus the name) */
+                if ((size_t)Length < offsetof(XBOX_FILE_DIRECTORY_INFORMATION, FileName) + name_len + 1) {
+                    LeaveCriticalSection(&cs);
+                    IoStatusBlock->Status = STATUS_BUFFER_OVERFLOW;
+                    IoStatusBlock->Information = 0;
+                    return STATUS_BUFFER_OVERFLOW;
+                }
+                ih->enum_index++;
                 entry = (PXBOX_FILE_DIRECTORY_INFORMATION)FileInformation;
                 memset(entry, 0, sizeof(*entry));
                 entry->FileNameLength = (ULONG)name_len;
@@ -1855,8 +1864,15 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
                 return STATUS_NO_MORE_FILES;
             }
             {
-                xdvdfs_entry *e = &ents[ih->enum_index++];
+                xdvdfs_entry *e = &ents[ih->enum_index];
                 size_t name_len = strlen(e->name);
+                /* never write past the caller's buffer (the entry is the fixed part plus the name) */
+                if ((size_t)Length < offsetof(XBOX_FILE_DIRECTORY_INFORMATION, FileName) + name_len + 1) {
+                    IoStatusBlock->Status = STATUS_BUFFER_OVERFLOW;
+                    IoStatusBlock->Information = 0;
+                    return STATUS_BUFFER_OVERFLOW;
+                }
+                ih->enum_index++;
                 entry = (PXBOX_FILE_DIRECTORY_INFORMATION)FileInformation;
                 memset(entry, 0, sizeof(*entry));
                 entry->FileNameLength = (ULONG)name_len;
