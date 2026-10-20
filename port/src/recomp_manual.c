@@ -171,13 +171,13 @@ void hook_lockrect_0016B1C0(void)
         d3d8_NoteGuestFramebufferLock();
         if (!seen_a) {
             seen_a = pbits;
-            d3d8_SetGuestFramebuffer(XBOX_PTR(pbits), pitch, w, h);
+            d3d8_SetGuestFramebuffer((const void *)XBOX_PTR(pbits), pitch, w, h);
             fprintf(stderr, "  [FB] guest framebuffer discovered: 0x%08X "
                     "pitch %u (%ux%u)\n", pbits, pitch, w, h);
             fflush(stderr);
         } else if (!seen_b) {
             seen_b = pbits;
-            d3d8_SetGuestFramebufferAlt(XBOX_PTR(pbits));
+            d3d8_SetGuestFramebufferAlt((const void *)XBOX_PTR(pbits));
             fprintf(stderr, "  [FB] second framebuffer discovered: 0x%08X "
                     "(double buffered)\n", pbits);
             fflush(stderr);

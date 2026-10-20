@@ -406,6 +406,9 @@ VOID RaiseException(DWORD code, DWORD flags, DWORD nargs, const ULONG_PTR *args)
  * On Linux the equivalent goes through sigaction(SIGSEGV/SIGFPE) +
  * ucontext_t; for now we accept the registration and never fire. */
 typedef void *PEXCEPTION_POINTERS;
+/* Incomplete on purpose: code that takes an EXCEPTION_POINTERS* compiles, code that
+ * reads x86 context out of one does not (it is Windows-only). */
+typedef struct _EXCEPTION_POINTERS EXCEPTION_POINTERS;
 typedef LONG (*PVECTORED_EXCEPTION_HANDLER)(PEXCEPTION_POINTERS info);
 PVOID AddVectoredExceptionHandler(ULONG FirstHandler, PVECTORED_EXCEPTION_HANDLER Handler);
 ULONG RemoveVectoredExceptionHandler(PVOID Handle);
@@ -590,6 +593,50 @@ BOOL    CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES sa);
 /* 64-bit stdio seeks (MSVC names) */
 #define _fseeki64 fseeko
 #define _ftelli64 ftello
+
+
+/* ---- Pieces the OpenTricky port uses on top of the runtime's needs ----- */
+#define INVALID_FILE_ATTRIBUTES ((DWORD)0xFFFFFFFF)
+DWORD GetFileAttributesA(LPCSTR path);
+DWORD GetFullPathNameA(LPCSTR path, DWORD size, LPSTR out, LPSTR *filePart);
+BOOL  CreateDirectoryW(LPCWSTR path, LPSECURITY_ATTRIBUTES sa);   /* 16-bit WCHAR path, UTF-16 */
+#include <wchar.h>
+#define MAPVK_VSC_TO_VK_EX 3
+static inline UINT MapVirtualKeyW(UINT code, UINT type) { (void)code; (void)type; return 0; }
+static inline HWND GetForegroundWindow(void) { return NULL; }
+#define _snwprintf swprintf
+static inline int _putenv_s(const char *n, const char *v) { return setenv(n, v, 1); }
+#define WC_NO_BEST_FIT_CHARS 0x00000400u            /* host wchar_t (32-bit); used for paths handed to no-op sinks */
+#define PAGE_GUARD 0x100u
+#include "ot_vk.h"
+#if defined(__aarch64__)
+#define YieldProcessor() __asm__ __volatile__("yield")
+#else
+#define YieldProcessor() __asm__ __volatile__("pause")
+#endif
+
+/* winmm timer resolution: nothing to do on a host with a high-resolution clock. */
+#define TIMERR_NOERROR 0
+static inline UINT timeBeginPeriod(UINT ms) { (void)ms; return TIMERR_NOERROR; }
+static inline UINT timeEndPeriod(UINT ms)   { (void)ms; return TIMERR_NOERROR; }
+
+/* shell: known folders and ShellExecute. Documents is $HOME/Documents; opening a
+ * folder in the file manager is not wired (ShellExecuteW reports failure). */
+typedef struct { int id; } KNOWNFOLDERID;
+extern const KNOWNFOLDERID FOLDERID_Documents;
+#define REFKNOWNFOLDERID const KNOWNFOLDERID *
+#define SUCCEEDED(hr) ((HRESULT)(hr) >= 0)
+#ifndef FAILED
+#define FAILED(hr) ((HRESULT)(hr) < 0)
+#endif
+HRESULT SHGetKnownFolderPath(const KNOWNFOLDERID *id, DWORD flags, HANDLE token, PWSTR *out);
+VOID    CoTaskMemFree(LPVOID p);
+HINSTANCE ShellExecuteW(HWND owner, LPCWSTR verb, LPCWSTR file, LPCWSTR params, LPCWSTR dir, int show);
+#define SW_SHOWNORMAL 1
+int     MessageBoxW(HWND hwnd, LPCWSTR text, LPCWSTR caption, UINT type);
+#ifndef MB_ICONWARNING
+#define MB_ICONWARNING 0x00000030u
+#endif
 
 #ifdef __cplusplus
 }

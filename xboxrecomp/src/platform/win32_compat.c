@@ -1734,4 +1734,93 @@ BOOL CreateDirectoryA(LPCSTR path, LPSECURITY_ATTRIBUTES sa)
     return FALSE;
 }
 
+/* ---- port helpers (see win32_compat.h) ---------------------------------- */
+#include <sys/stat.h>
+
+DWORD GetFileAttributesA(LPCSTR path)
+{
+    struct stat st;
+    if (!path || stat(path, &st) != 0) { SetLastError(ERROR_FILE_NOT_FOUND); return INVALID_FILE_ATTRIBUTES; }
+    return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+}
+
+static void wide_to_utf8(LPCWSTR w, char *out, size_t n)
+{
+    size_t k = 0;
+    for (; w && *w && k + 4 < n; w++) {
+        uint32_t c = *w;
+        if (c >= 0xD800 && c < 0xDC00 && w[1] >= 0xDC00 && w[1] < 0xE000) { c = 0x10000 + ((c - 0xD800) << 10) + (w[1] - 0xDC00); w++; }
+        if (c < 0x80) out[k++] = (char)c;
+        else if (c < 0x800) { out[k++] = (char)(0xC0 | (c >> 6)); out[k++] = (char)(0x80 | (c & 63)); }
+        else if (c < 0x10000) { out[k++] = (char)(0xE0 | (c >> 12)); out[k++] = (char)(0x80 | ((c >> 6) & 63)); out[k++] = (char)(0x80 | (c & 63)); }
+        else { out[k++] = (char)(0xF0 | (c >> 18)); out[k++] = (char)(0x80 | ((c >> 12) & 63)); out[k++] = (char)(0x80 | ((c >> 6) & 63)); out[k++] = (char)(0x80 | (c & 63)); }
+    }
+    out[k] = 0;
+}
+
+BOOL CreateDirectoryW(LPCWSTR path, LPSECURITY_ATTRIBUTES sa)
+{
+    char u8[1024];
+    wide_to_utf8(path, u8, sizeof u8);
+    return CreateDirectoryA(u8, sa);
+}
+
+const KNOWNFOLDERID FOLDERID_Documents = { 1 };
+
+HRESULT SHGetKnownFolderPath(const KNOWNFOLDERID *id, DWORD flags, HANDLE token, PWSTR *out)
+{
+    (void)id; (void)flags; (void)token;
+    const char *home = getenv("HOME");
+    if (!home || !*home || !out) return (HRESULT)0x80004005;
+    char p[1024];
+    snprintf(p, sizeof p, "%s/Documents", home);
+    size_t n = strlen(p);
+    WCHAR *w = (WCHAR *)malloc((n + 1) * sizeof(WCHAR));
+    if (!w) return (HRESULT)0x8007000E;
+    for (size_t i = 0; i <= n; i++) w[i] = (unsigned char)p[i];   /* paths here are ASCII in practice */
+    *out = w;
+    return 0;
+}
+VOID CoTaskMemFree(LPVOID p) { free(p); }
+
+HINSTANCE ShellExecuteW(HWND owner, LPCWSTR verb, LPCWSTR file, LPCWSTR params, LPCWSTR dir, int show)
+{ (void)owner; (void)verb; (void)file; (void)params; (void)dir; (void)show; return (HINSTANCE)(uintptr_t)2; }
+
+int MessageBoxW(HWND hwnd, LPCWSTR text, LPCWSTR caption, UINT type)
+{
+    char t[1024], c[256];
+    (void)hwnd; (void)type;
+    wide_to_utf8(text, t, sizeof t); wide_to_utf8(caption, c, sizeof c);
+    fprintf(stderr, "[MessageBox] %s: %s\n", c, t);
+    return 1;
+}
+
+/* Absolute, lexically normalised path ("." and ".." folded) without touching the disk. */
+DWORD GetFullPathNameA(LPCSTR path, DWORD size, LPSTR out, LPSTR *filePart)
+{
+    char tmp[2048], *seg[256], *p, *save = NULL;
+    int n = 0, i;
+    size_t len = 0;
+    if (!path || !*path) return 0;
+    if (path[0] == '/') snprintf(tmp, sizeof tmp, "%s", path);
+    else {
+        char cwd[1024];
+        if (!getcwd(cwd, sizeof cwd)) return 0;
+        snprintf(tmp, sizeof tmp, "%s/%s", cwd, path);
+    }
+    for (p = strtok_r(tmp, "/", &save); p && n < 256; p = strtok_r(NULL, "/", &save)) {
+        if (!strcmp(p, ".")) continue;
+        if (!strcmp(p, "..")) { if (n) n--; continue; }
+        seg[n++] = p;
+    }
+    char res[2048];
+    res[0] = 0;
+    for (i = 0; i < n; i++) len += (size_t)snprintf(res + len, sizeof res - len, "/%s", seg[i]);
+    if (!len) { res[0] = '/'; res[1] = 0; len = 1; }
+    if (len + 1 > size) return (DWORD)(len + 1);
+    memcpy(out, res, len + 1);
+    if (filePart) { char *s = strrchr(out, '/'); *filePart = (s && s[1]) ? s + 1 : NULL; }
+    return (DWORD)len;
+}
+
 #endif /* !_WIN32 */

@@ -1190,6 +1190,13 @@ void xbox_diag_stop(void)
 }
 
 #else  /* !_WIN32 */
+/* The diagnostics console is Windows-only; its hooks are plain pointers the host sets. */
+void (*g_diag_shot_hook)(const wchar_t *path) = NULL;
+int  (*g_diag_press_hook)(const char *name, int ms) = NULL;
+void (*g_diag_drawlog_hook)(int frames) = NULL;
+void (*g_diag_skipprog_hook)(uint32_t hash) = NULL;
+void (*g_diag_ignored_hook)(void) = NULL;
+
 void xbox_diag_start(void) {}
 void xbox_diag_stop(void) {}
 int  xbox_diag_watch_host_write(uint32_t va, uint32_t len, int begin) { (void)va; (void)len; (void)begin; return 0; }

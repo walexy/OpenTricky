@@ -330,6 +330,15 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
              s_game_dir, s_save_dir);
 }
 
+/* Point T: and U: at this title's own save directories (see the Windows branch). */
+void xbox_path_set_title_id(unsigned int title_id)
+{
+    snprintf(s_tdata_win,   sizeof s_tdata_win,   "\\TDATA\\%08X", title_id);
+    snprintf(s_udata_win,   sizeof s_udata_win,   "\\UDATA\\%08X", title_id);
+    snprintf(s_tdata_posix, sizeof s_tdata_posix, "/TDATA/%08X",   title_id);
+    snprintf(s_udata_posix, sizeof s_udata_posix, "/UDATA/%08X",   title_id);
+}
+
 BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
 {
     const char* remainder = NULL;

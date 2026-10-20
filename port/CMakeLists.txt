@@ -112,7 +112,6 @@ set(GAME_SOURCES
     src/settings.c
     src/controls.c
     src/hostui.c
-    src/crashreport.c
     src/recomp_manual.c
     src/pass_tags.c
     src/fps_cap.c
@@ -135,6 +134,14 @@ set(GAME_SOURCES
     src/xapi_input_hle.c
     src/recomp/recomp_probe.c
 )
+
+# The Windows crash reporter (dbghelp minidumps, report folder, dialog) has no equivalent
+# elsewhere; crashreport_posix.c satisfies the same header.
+if(WIN32)
+    list(APPEND GAME_SOURCES src/crashreport.c)
+else()
+    list(APPEND GAME_SOURCES src/crashreport_posix.c)
+endif()
 
 # Build identity written into crash reports (crashreport.c): -DSSX_BUILD_ID=...
 # (a release name) wins; otherwise the commit at configure time, "+" when the
@@ -162,6 +169,11 @@ message(STATUS "Build identity for crash reports: ${SSX_BUILD_ID}")
 set_source_files_properties(src/crashreport.c PROPERTIES
     COMPILE_DEFINITIONS "SSX_BUILD_ID=\"${SSX_BUILD_ID}\"")
 
+if(NOT WIN32)
+    # The port's sources include <windows.h> expecting the NT types and Win32 primitives;
+    # a few (aspect.c, drawdist.c) rely on it for string.h-level helpers. Force the shim in.
+    add_compile_options(-include ${XBOXRECOMP_DIR}/src/platform/windows.h -Wno-error=int-conversion)
+endif()
 if(WIN32)
     list(APPEND GAME_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/ssx_recomp.rc")
     add_executable(${PROJECT_NAME} WIN32 ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
