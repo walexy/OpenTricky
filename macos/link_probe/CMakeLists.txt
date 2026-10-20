@@ -53,6 +53,11 @@ target_include_directories(ot_port_probe PRIVATE
 target_compile_options(ot_port_probe PRIVATE -w -include ${CMAKE_CURRENT_SOURCE_DIR}/../../xboxrecomp/src/platform/windows.h)
 target_compile_definitions(ot_port_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(ot_port_probe PRIVATE xboxrecomp)
+find_package(SDL3 CONFIG)
+if(SDL3_FOUND)
+    target_compile_definitions(ot_port_probe PRIVATE OT_HAVE_WINDOW=1)
+    target_link_libraries(ot_port_probe PRIVATE SDL3::SDL3)
+endif()
 if(APPLE)
     # Everything the translated game defines (sub_XXXXXXXX ...) is unresolved here on purpose.
     target_link_options(ot_port_probe PRIVATE -Wl,-undefined,dynamic_lookup)

@@ -63,6 +63,12 @@ static unsigned  g_draw_total, g_clear_total, g_report_total;
 static PgraphD3D11Stats g_stats;
 
 /* guest framebuffer registered by the movie player's LockRect (recomp_manual.c) */
+/* Where finished frames go, if anything shows them (the port's SDL window): RGBA, 4 bytes a pixel,
+ * rows packed. Called on the thread that presents; the sink copies what it keeps. */
+typedef void (*d3d8_frame_sink_fn)(const uint8_t *rgba, unsigned w, unsigned h);
+static d3d8_frame_sink_fn g_frame_sink;
+void d3d8_SetFrameSink(d3d8_frame_sink_fn fn) { g_frame_sink = fn; }
+
 static const void *g_fb_src, *g_fb_alt;
 static unsigned    g_fb_pitch, g_fb_w, g_fb_h;
 static unsigned    g_fb_lock_seq, g_fb_locks;
@@ -133,6 +139,23 @@ static const void *guest_fb_freshest(void)
     return pick;
 }
 
+/* The guest framebuffer (X8R8G8B8: bytes B G R X) as RGBA for the window. NULL = hold the last frame. */
+static void post_guest_fb(const void *fb)
+{
+    static uint8_t *rgba; static size_t cap;
+    unsigned x, y;
+    size_t need = (size_t)g_fb_w * g_fb_h * 4;
+    if (!g_frame_sink || !fb || !g_fb_w || !g_fb_h) return;
+    if (need > cap) { free(rgba); rgba = (uint8_t *)malloc(need); cap = rgba ? need : 0; }
+    if (!rgba) return;
+    for (y = 0; y < g_fb_h; y++) {
+        const uint8_t *s = (const uint8_t *)fb + (size_t)y * g_fb_pitch;
+        uint8_t *d = rgba + (size_t)y * g_fb_w * 4;
+        for (x = 0; x < g_fb_w; x++) { d[x * 4] = s[x * 4 + 2]; d[x * 4 + 1] = s[x * 4 + 1]; d[x * 4 + 2] = s[x * 4]; d[x * 4 + 3] = 255; }
+    }
+    g_frame_sink(rgba, g_fb_w, g_fb_h);
+}
+
 static void dump_guest_fb(const void *fb)
 {
     static const char *dir; static int checked, max_frames = 60, dumped;
@@ -175,8 +198,11 @@ void d3d8_PresentFrame(void)
 {
     g_present_seq++;
     g_last_present_ms = now_ms();
-    if (g_fb_src && d3d8_GuestFramebufferActive())     /* what the real present shows */
-        dump_guest_fb(guest_fb_freshest());
+    if (g_fb_src && d3d8_GuestFramebufferActive()) {   /* what the real present shows */
+        const void *fb = guest_fb_freshest();
+        dump_guest_fb(fb);
+        post_guest_fb(fb);
+    }
 }
 
 unsigned d3d8_PresentSeq(void)   { return g_present_seq; }

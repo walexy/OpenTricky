@@ -96,9 +96,10 @@ cmake --build port/build -j "$NPROC"
 if [ "$(uname -s)" = "Darwin" ]; then
     # Headless bring-up: no launcher, no DLL bundling (steps 4 and 5).
     mkdir -p dist/headless && cp "port/build/SSX Tricky" dist/headless/
-    echo "Done (macOS headless, no window or sound): dist/headless/SSX Tricky"
+    echo "Done (macOS: a window shows the movies, no 3D and no sound yet): dist/headless/SSX Tricky"
     echo "Run it from an empty folder:  \"dist/headless/SSX Tricky\" --direct <your .iso>"
-    echo "XBOX_DUMP_FB=<folder> saves the movie frames as PPM pictures. This build contains code"
+    echo "XBOX_HEADLESS=1 runs without a window; XBOX_DUMP_FB=<folder> saves the movie frames as PPM pictures."
+    echo "(needs: brew install sdl3). This build contains code"
     echo "translated from your copy of the game: please don't share it."
     exit 0
 fi

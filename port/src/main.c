@@ -51,6 +51,7 @@
 #include <xbox/xboxrecomp.h>
 #include "kernel/xbox_xdvdfs.h"
 #include "launcher.h"
+#include "ot_window.h"
 #include "version.h"
 #include "hostui.h"
 #include "controls.h"
@@ -1680,6 +1681,14 @@ static LONG WINAPI recomp_crash_filter(EXCEPTION_POINTERS *ep)
 }
 #endif /* _WIN32 */
 
+#if !defined(_WIN32)
+static int ot_guest_main(void *unused)
+{
+    (void)unused;
+    return ot_winmain(NULL, NULL, NULL, 1);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     crashreport_install();      /* XBOX_CRASH_REPORT=0: nothing */
@@ -1692,6 +1701,12 @@ int main(int argc, char **argv)
 #else
     g_argc = argc;
     g_argv = argv;
+    if (ot_window_wanted()) {
+        /* The window and its event loop own the main thread; the game runs on a second one. */
+        extern void d3d8_SetFrameSink(void (*fn)(const uint8_t *rgba, unsigned w, unsigned h));
+        d3d8_SetFrameSink(ot_window_post_frame);
+        return ot_window_run(ot_guest_main, NULL);
+    }
     return ot_winmain(NULL, NULL, NULL, 1);
 #endif
 }

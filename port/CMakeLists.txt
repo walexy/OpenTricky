@@ -222,6 +222,16 @@ if(WIN32)
 elseif(APPLE)
     find_package(Threads REQUIRED)
     target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads m)
+
+    # The game window (src/ot_window.c): SDL3, from Homebrew (brew install sdl3). OT_WINDOW=OFF builds
+    # without it; at run time OT_WINDOW=0 or XBOX_HEADLESS=1 runs the game on the main thread with no window.
+    option(OT_WINDOW "Open an SDL3 window (macOS)" ON)
+    target_sources(${PROJECT_NAME} PRIVATE src/ot_window.c)
+    if(OT_WINDOW)
+        find_package(SDL3 CONFIG REQUIRED)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE OT_HAVE_WINDOW=1)
+        target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3)
+    endif()
 endif()
 
 # Host tests of the settings registry and settings.ini (no game):
