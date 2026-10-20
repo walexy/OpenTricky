@@ -212,17 +212,17 @@ if(WIN32)
         $<IF:$<BOOL:${MINGW}>,xinput1_4,xinput>   # XInput 1.4 ships with Windows
         winmm
         ws2_32      # netplay over UDP (XBOX_NET)
+        # Launcher: controls dialog, file/folder pickers, shell
+        comctl32
+        ole32
+        shell32
+        uuid
+        d3dcompiler
+    )
 elseif(APPLE)
     find_package(Threads REQUIRED)
     target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads m)
 endif()
-    # Launcher: controls dialog, file/folder pickers, shell
-    comctl32
-    ole32
-    shell32
-    uuid
-    d3dcompiler
-)
 
 # Host tests of the settings registry and settings.ini (no game):
 #   cmake -DSSX_BUILD_TESTS=ON ... ; cmake --build ... --target settings_test

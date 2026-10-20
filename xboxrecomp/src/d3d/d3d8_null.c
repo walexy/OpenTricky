@@ -280,7 +280,18 @@ void pgraph_d3d11_present(uint32_t crtc_start) { (void)crtc_start; d3d8_PresentF
 void pgraph_d3d11_present_guest_fb(uint32_t va, uint32_t pitch, uint32_t w, uint32_t h)
 { (void)va; (void)pitch; (void)w; (void)h; }
 void pgraph_d3d11_test_quad(void) {}
-void pgraph_d3d11_report_nops(void) {}
+/* Called every 5 s by nv2a_live_pb.c: the rate at which the title presents, the headless "frame rate". */
+void pgraph_d3d11_report_nops(void)
+{
+    static uint64_t t0; static unsigned p0;
+    uint64_t now = now_ms();
+    unsigned p = g_present_seq;
+    if (t0)
+        fprintf(stderr, "[NULL] presents=%u (%.1f/s over %.1f s) draws=%u clears=%u reports=%u flip_mode=%d fb_locks=%u\n",
+                p, (p - p0) * 1000.0 / (double)(now - t0 ? now - t0 : 1), (double)(now - t0) / 1000.0,
+                g_draw_total, g_clear_total, g_report_total, g_flip_mode, g_fb_locks);
+    t0 = now; p0 = p;
+}
 void pgraph_d3d11_report_occlusion(void) {}
 void pgraph_d3d11_perf_counts(unsigned *draws, unsigned *methods, unsigned *verts)
 { if (draws) *draws = g_stats.draw_calls; if (methods) *methods = g_stats.methods_handled; if (verts) *verts = 0; }

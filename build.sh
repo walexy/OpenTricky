@@ -19,8 +19,23 @@ cd "$ROOT"
 # Host differences: the MSYS2 UCRT64 toolchain on Windows, Homebrew + Ninja on macOS.
 if [ "$(uname -s)" = "Darwin" ]; then
     GEN="Ninja"; MAKE_TOOL="ninja"; NPROC="$(sysctl -n hw.ncpu)"
-    PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"; export PYTHON
+    # a virtualenv with capstone, numpy and pillow: here, or beside the repository, else python3
+    if [ -z "${PYTHON:-}" ]; then
+        for v in "$ROOT/.venv" "$ROOT/../.venv"; do [ -x "$v/bin/python" ] && PYTHON="$v/bin/python" && break; done
+        PYTHON="${PYTHON:-python3}"
+    fi
+    export PYTHON
     OT_HEADLESS_OPT="-DOT_HEADLESS=ON -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl"
+    # The translation passes read GNU objdump's output (Apple's is LLVM's: no `-b binary`).
+    # brew install binutils; it is keg-only, so expose just objdump to the passes.
+    GNU_OBJDUMP="$(command -v gobjdump || true)"
+    [ -z "$GNU_OBJDUMP" ] && [ -x /opt/homebrew/opt/binutils/bin/objdump ] && GNU_OBJDUMP=/opt/homebrew/opt/binutils/bin/objdump
+    if [ -n "$GNU_OBJDUMP" ]; then
+        mkdir -p build/gnu-bin && ln -sf "$GNU_OBJDUMP" build/gnu-bin/objdump
+        export PATH="$ROOT/build/gnu-bin:$PATH"
+    else
+        echo "missing: GNU objdump -- brew install binutils"; exit 1
+    fi
 else
     GEN="MinGW Makefiles"; MAKE_TOOL="mingw32-make"; NPROC="$(nproc)"
     PYTHON="${PYTHON:-python}"; export PYTHON
@@ -40,6 +55,7 @@ for t in cmake "$MAKE_TOOL" "$PYTHON"; do
 done
 if [ -n "$missing" ]; then
     echo "missing:$missing"
+    if [ "$(uname -s)" = "Darwin" ]; then echo "macOS: brew install cmake ninja binutils; python -m venv .venv && .venv/bin/pip install capstone numpy pillow"; exit 1; fi
     echo "In an MSYS2 UCRT64 shell:"
     echo "  pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake make \\"
     echo "            mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-capstone \\"
@@ -79,8 +95,11 @@ cmake --build port/build -j "$NPROC"
 
 if [ "$(uname -s)" = "Darwin" ]; then
     # Headless bring-up: no launcher, no DLL bundling (steps 4 and 5).
-    mkdir -p dist/headless && cp port/build/ssx_tricky* dist/headless/ 2>/dev/null || true
-    echo "Done (macOS headless): see dist/headless/. Run it with --headless --direct <iso>."
+    mkdir -p dist/headless && cp "port/build/SSX Tricky" dist/headless/
+    echo "Done (macOS headless, no window or sound): dist/headless/SSX Tricky"
+    echo "Run it from an empty folder:  \"dist/headless/SSX Tricky\" --direct <your .iso>"
+    echo "XBOX_DUMP_FB=<folder> saves the movie frames as PPM pictures. This build contains code"
+    echo "translated from your copy of the game: please don't share it."
     exit 0
 fi
 

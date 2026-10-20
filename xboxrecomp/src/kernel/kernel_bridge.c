@@ -63,6 +63,14 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va);
 /* Translate Xbox VA to native pointer (NULL-safe: 0 → NULL) */
 #define XBOX_TO_NATIVE(va) ((va) ? (void*)((uintptr_t)xbox_fold_ram_alias((uint32_t)(va)) + g_xbox_mem_offset) : NULL)
 
+/* Handle-table tagging (the table is further down). Host HANDLEs are 64-bit pointers here, so a handle
+ * can only live in a 32-bit Xbox slot as a token: tag in the high byte, table index below. */
+#define BRIDGE_HANDLE_TAG  0x48000000u
+#define BRIDGE_HANDLE_MASK 0x00FFFFFFu
+#define BRIDGE_HANDLE_MAX  16384
+static HANDLE bridge_read_handle(uint32_t va);   /* defined below */
+static void bridge_write_handle(uint32_t handle_va, HANDLE h);   /* defined below */
+
 /* ── Dispatcher-object VA -> native HANDLE resolution ──────
  * Real Xbox kernel dispatcher objects (KEVENT, KSEMAPHORE, ...) are structs
  * games embed directly in their own memory and pass by address -- there is
@@ -141,6 +149,9 @@ static HANDLE xbox_resolve_dispatcher_handle(uint32_t obj_va)
      * values that actually look like Xbox memory addresses go through the
      * lazy-synthesis path below. */
     if (obj_va < XBOX_BASE_ADDRESS) return (HANDLE)(uintptr_t)obj_va;
+    /* A bridge token (a thread handle the title stored, say): resolve it through the handle table
+     * instead of treating it as the address of a dispatcher object. */
+    if ((obj_va & 0xFF000000u) == BRIDGE_HANDLE_TAG) return bridge_read_handle(obj_va);
     /* One object, one key: an object in contiguous memory can be named by
      * its 0x80000000 alias or its plain address. */
     obj_va = xbox_fold_ram_alias(obj_va);
@@ -597,7 +608,7 @@ static void bridge_PsCreateSystemThreadEx(void)
                 /* Main game thread: run directly, inheriting register state */
                 int terminated;
                 if (xbox_handle_ptr) {
-                    BRIDGE_MEM32(xbox_handle_ptr) = (uint32_t)(uintptr_t)GetCurrentThread();
+                    bridge_write_handle(xbox_handle_ptr, GetCurrentThread());
                 }
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context2;
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context1;
@@ -637,9 +648,9 @@ static void bridge_PsCreateSystemThreadEx(void)
 
                 hThread = CreateThread(NULL, 0, xbox_worker_thread_trampoline, params, 0, NULL);
                 if (hThread) {
-                    if (xbox_handle_ptr) BRIDGE_MEM32(xbox_handle_ptr) = (uint32_t)(uintptr_t)hThread;
-                    fprintf(stderr, "  [KERNEL]   worker thread handle = 0x%08X written to 0x%08X\n",
-                            (uint32_t)(uintptr_t)hThread, xbox_handle_ptr);
+                    bridge_write_handle(xbox_handle_ptr, hThread);
+                    fprintf(stderr, "  [KERNEL]   worker thread handle %p -> token 0x%08X written to 0x%08X\n",
+                            hThread, xbox_handle_ptr ? BRIDGE_MEM32(xbox_handle_ptr) : 0u, xbox_handle_ptr);
                     fflush(stderr);
                     /* Intentionally not closed here -- the game may later wait on
                      * this handle (KeWaitForSingleObject/KeWaitForMultipleObjects,
@@ -1097,9 +1108,6 @@ static void bridge_NtCreateEvent(void)
 /* Handle-table tagging. Defined here rather than beside the table itself
  * further down because callers above need the tag to tell a bridge token
  * from a raw Xbox VA. */
-#define BRIDGE_HANDLE_TAG  0x48000000u
-#define BRIDGE_HANDLE_MASK 0x00FFFFFFu
-#define BRIDGE_HANDLE_MAX  16384
 
 static HANDLE bridge_read_handle(uint32_t va); /* defined below */
 
