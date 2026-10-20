@@ -38,5 +38,7 @@ static inline unsigned char _BitScanReverse(uint32_t *idx, uint32_t mask)
     return 1;
 }
 #define _ReadWriteBarrier() __asm__ __volatile__("" ::: "memory")
+#ifndef __debugbreak
 #define __debugbreak()      __builtin_trap()
+#endif
 #endif

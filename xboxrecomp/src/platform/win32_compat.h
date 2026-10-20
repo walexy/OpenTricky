@@ -466,6 +466,11 @@ LPVOID MapViewOfFileEx(HANDLE mapping, DWORD access,
 BOOL   UnmapViewOfFile(LPCVOID baseAddr);
 #define CreateFileMapping CreateFileMappingA
 
+/* Reserve an address range for the process's own use (PROT_NONE, nothing
+ * committed). Fixed-address VirtualAlloc/MapViewOfFileEx inside it replace the
+ * placeholder instead of probing for a free spot. */
+void *w32_reserve_window(SIZE_T size);
+
 /* ---- Aligned allocation ---------------------------------------------- */
 void *_aligned_malloc(SIZE_T size, SIZE_T alignment);
 void  _aligned_free(void *ptr);

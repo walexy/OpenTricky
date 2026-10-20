@@ -20,3 +20,10 @@ target_link_libraries(ot_link_probe PRIVATE xboxrecomp)
 if(APPLE)
     target_link_options(ot_link_probe PRIVATE -Wl,-all_load -Wl,-undefined,error)
 endif()
+
+# Guest-window test (0.3): the real xbox_MemoryLayoutInit on a blank XBE.
+add_executable(ot_layout_test ../layout_test/layout_test.c ../layout_test/stubs.c)
+target_include_directories(ot_layout_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../port/src/recomp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../xboxrecomp/src)
+target_link_libraries(ot_layout_test PRIVATE xboxrecomp)

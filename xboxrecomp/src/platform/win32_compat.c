@@ -905,6 +905,28 @@ static int prot_from_page(DWORD protect)
     }
 }
 
+/* An address range this process reserved for itself (the guest window). Inside
+ * it MAP_FIXED is safe -- it can only replace our own placeholder mapping --
+ * which is what VirtualAlloc/MapViewOfFileEx at a fixed address need on macOS,
+ * where there is no MAP_FIXED_NOREPLACE. */
+static uintptr_t s_win_lo, s_win_hi;
+
+static int in_owned_window(const void *p, size_t len)
+{
+    uintptr_t a = (uintptr_t)p;
+    return s_win_hi && a >= s_win_lo && a + len <= s_win_hi;
+}
+
+void *w32_reserve_window(SIZE_T size)
+{
+    /* PROT_NONE + NORESERVE: address space only, no memory is committed. */
+    void *p = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    s_win_lo = (uintptr_t)p;
+    s_win_hi = (uintptr_t)p + size;
+    return p;
+}
+
 LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD protect)
 {
     int prot  = prot_from_page(protect);
@@ -918,8 +940,10 @@ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD pro
         /* fall through to a fresh mapping */
     }
 
+    int owned = address && in_owned_window(address, size);
+    if (owned) flags |= MAP_FIXED;
 #if defined(MAP_FIXED_NOREPLACE)
-    if (address) flags |= MAP_FIXED_NOREPLACE;
+    else if (address) flags |= MAP_FIXED_NOREPLACE;
 #endif
     void *p = mmap(address, size, prot ? prot : PROT_READ | PROT_WRITE,
                    flags, -1, 0);
@@ -929,7 +953,7 @@ LPVOID VirtualAlloc(LPVOID address, SIZE_T size, DWORD allocationType, DWORD pro
      * would silently unmap whatever is already there. Without MAP_FIXED the
      * kernel places the mapping elsewhere when the range is taken, so a result
      * that is not the requested address means "that range was not free". */
-    if (address && p != address) { munmap(p, size); SetLastError(8); return NULL; }
+    if (address && !owned && p != address) { munmap(p, size); SetLastError(8); return NULL; }
 #endif
     return p;
 }
