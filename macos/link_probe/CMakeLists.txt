@@ -64,3 +64,9 @@ set(OT_SUB_STUBS "" CACHE FILEPATH "stubs for the translated game's functions")
 if(OT_SUB_STUBS)
     target_sources(ot_port_probe PRIVATE ${OT_SUB_STUBS})
 endif()
+
+# ISO-backed file layer (Phase 1): the POSIX Nt* file backend serving the disc from an XDVDFS image.
+# run: ot_iso_test <image.iso>   (python3 macos/iso_test/make_xdvdfs.py out.iso builds a small one)
+add_executable(ot_iso_test ../iso_test/iso_test.c ../layout_test/stubs.c)
+target_include_directories(ot_iso_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../xboxrecomp/src ${CMAKE_CURRENT_SOURCE_DIR}/../../port/src/recomp)
+target_link_libraries(ot_iso_test PRIVATE xboxrecomp)

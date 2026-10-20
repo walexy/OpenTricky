@@ -330,6 +330,24 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
              s_game_dir, s_save_dir);
 }
 
+/* Is this Xbox path on the game disc, and what follows the prefix? (See the Windows branch:
+ * any rule that resolves under the game directory, i.e. not the hard-disk rule.) */
+BOOL xbox_path_split_game_disc(const char* xbox_path, const char** remainder)
+{
+    if (!xbox_path) return FALSE;
+    if (!s_initialized) xbox_path_init(NULL, NULL);
+
+    for (int i = 0; i < PATH_RULE_COUNT; i++) {
+        if (s_rules[i].to_save) continue;
+        int skip = match_prefix(xbox_path, s_rules[i].prefix);
+        if (skip) {
+            if (remainder) *remainder = xbox_path + skip;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 /* Point T: and U: at this title's own save directories (see the Windows branch). */
 void xbox_path_set_title_id(unsigned int title_id)
 {

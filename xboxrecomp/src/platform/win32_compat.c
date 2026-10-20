@@ -284,6 +284,10 @@ static void obj_release(w32_object *o)
     free(o);
 }
 
+/* Handles that are not pointers to our objects (the file layer's virtual ISO handles carry a tag in
+ * the bits above any user-space address): never dereferenced here. */
+static int foreign_handle(HANDLE h) { return ((uintptr_t)h >> 47) != 0 && h != INVALID_HANDLE_VALUE; }
+
 /* ---- fd-backed file handle (for the file-I/O HLE) -------------------- */
 HANDLE w32_open_handle(int fd, const char *host_path)
 {
@@ -296,19 +300,21 @@ HANDLE w32_open_handle(int fd, const char *host_path)
 int w32_handle_fd(HANDLE h)
 {
     w32_object *o = (w32_object *)h;
+    if (foreign_handle(h)) return -1;
     return (o && o->kind == K_FILE) ? o->fd : -1;
 }
 
 const char *w32_handle_path(HANDLE h)
 {
     w32_object *o = (w32_object *)h;
+    if (foreign_handle(h)) return NULL;
     return (o && o->kind == K_FILE) ? o->file_path : NULL;
 }
 
 BOOL CloseHandle(HANDLE h)
 {
     if (!h || h == PSEUDO_CURRENT_THREAD || h == PSEUDO_CURRENT_PROCESS ||
-        h == INVALID_HANDLE_VALUE)
+        h == INVALID_HANDLE_VALUE || foreign_handle(h))
         return TRUE;
     obj_release((w32_object *)h);
     return TRUE;

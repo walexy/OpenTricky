@@ -2394,6 +2394,12 @@ int xbox_VerifyViewIntegrity(const char *tag)
     int foreign = 0;
 
     if (!g_memory_base) return 0;
+#if defined(__APPLE__)
+    /* The Windows check looks for foreign allocations inside the guest view with VirtualQuery. Here the
+     * whole 4 GB window is our own reservation (w32_reserve_window), so nothing foreign can be in it. */
+    (void)tag; (void)p; (void)end; (void)mbi;
+    return 0;
+#endif
 
     p   = (unsigned char *)g_memory_base;
     end = p + g_memory_size;
