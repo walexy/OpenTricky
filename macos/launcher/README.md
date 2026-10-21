@@ -37,3 +37,19 @@ Frame rates above 60: the game keeps its logic at 60 Hz and draws extra frames i
 HDR and wide gamut (`OT_HDR=on`): the game's picture is SDR, made for a TV. On a wide-gamut HDR display the app asks for an HDR (extended linear) window and runs a colour pass (`xboxrecomp/src/d3d/d3d8_gpu_out.c`) that reads the colours as Display P3 instead of sRGB (saturated oranges, yellows and reds reach what the panel can show; greys and white stay put), adds a little more chroma to oranges and yellows (`OT_HDR_WARM`), and lifts bright, saturated highlights (fire, lamps, the game's gold) towards the display's HDR headroom, which macOS reports per window and changes with the display's brightness (1.2 on the development machine, so the lift is small there). The 3D picture gets only a share of the gamut expansion (`OT_HDR_SCENE`, default 0.45: photographic colours look oversaturated at full strength, flat graphics do not): at the frame-end marker the 3D is moved part of the way back before the final pass, so the HUD and menus keep the full expansion. Without an HDR display the option is ignored. `macos/hdr_test/hdr_test.c` checks the colour maths on known colours.
 
 Button pictures (`OT_BUTTONS`): the game's button prompts are redrawn as an Xbox Series pad, a PlayStation pad or the PS2 style, from the CC0 drawings in `port/assets/btnicons/` (copied into the app). HD textures (`OT_HD_TEXTURES`): point it at your copy of the community pack (a folder of `.dds` files, or the folder above its `replacements` folder; not included): the game's textures are looked up by hash in `port/assets/hdtex_index.txt` and replaced when the pack has them. Both are off by default.
+
+## Settings window and iCloud storage
+
+`ot-tool.swift` (built into the app as `Contents/Resources/ot-tool` by `make_app.sh`) adds two things:
+
+- **Settings window** shown before the game starts: screen shape, render resolution, full screen, frame-rate limit, VSync, SMAA, soft shadows,
+  HDR (with tuning), button pictures, HD texture pack, disc image, iCloud on/off. "Save and Play" starts the game, "Quit" does not.
+  It can be switched off in the window; hold Option while opening the app, or `open -a "SSX Tricky" --args --settings`, to get it back.
+  It edits `display.env` in place (comments and unknown keys are kept; a setting left at the game's default is removed from the file).
+- **iCloud mirror** of `display.env` and the game saves (`hdd/`). The working copy is always local
+  (`~/Library/Application Support/OpenTricky`), so the game never waits for the network. `ot-tool sync pull` runs before the window/game,
+  `sync push` after the game ends (also after a crash or quit). Destination: iCloud Drive › OpenTricky
+  (`~/Library/Mobile Documents/com~apple~CloudDocs/OpenTricky`, no entitlement needed). Newer file wins (2 s tolerance); a local file that a pull
+  replaces is first copied to `sync-backups/<time>/`; nothing is deleted by a sync. Without iCloud Drive, or with the switch off, it stays local.
+  Not synced (machine-specific): `disc-image.txt`, `launcher-prefs.txt`, logs. Log of syncs: `sync.log`.
+- Tests: `OT_TEST_HOME=<dir>` points the tool at a fake home (`ot-tool sync push|pull`, `ot-tool selftest`).

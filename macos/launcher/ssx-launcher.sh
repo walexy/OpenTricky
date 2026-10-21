@@ -8,6 +8,7 @@
 # - tells you in a dialog if the game could not start or ended abnormally
 #
 # Change the disc image later:  open -a "SSX Tricky" --args --choose-iso
+# Settings window: shown at every start unless you turn that off in it; open it anyway with Option held, or --args --settings
 APP_NAME="SSX Tricky"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/../Resources/ssx-tricky-bin"
@@ -20,6 +21,15 @@ say() {   # say <message>: a dialog (the app has no terminal)
 }
 
 mkdir -p "$SUPPORT" || { say "Could not create $SUPPORT"; exit 1; }
+
+# settings window + iCloud mirror of the settings and game saves (macos/launcher/ot-tool.swift); both are optional extras
+TOOL="$HERE/../Resources/ot-tool"
+[ -x "$TOOL" ] || TOOL=""
+[ -n "$TOOL" ] && "$TOOL" sync pull >> "$SUPPORT/sync.log" 2>&1          # newer settings / saves from iCloud Drive, if it is there
+if [ -n "$TOOL" ]; then
+    gui_args="--auto"; for a in "$@"; do [ "$a" = "--settings" ] && gui_args="--settings"; done
+    "$TOOL" gui $gui_args || exit 0                                       # closed without Play: do not start the game
+fi
 
 # the game needs SDL3 and OpenSSL from Homebrew
 missing=""
@@ -52,7 +62,7 @@ fi
 LINK="$SUPPORT/$APP_NAME"
 ln -sf "$BIN" "$LINK"
 
-# optional display settings: ~/Library/Application Support/OpenTricky/display.env, lines like
+# display settings: ~/Library/Application Support/OpenTricky/display.env (the settings window writes it; you can also edit it), lines like
 #   OT_SHAPE=21:9        auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number
 #   OT_RENDER_H=1440     height of the picture the GPU draws (default 1080 wide, 960 at 4:3)
 #   OT_BUTTONS=playstation  button pictures in the menus and HUD: modern (Xbox Series) | playstation | ps2 (default: the game's own)
@@ -77,6 +87,7 @@ trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP     # quitting the app (Dock
 wait "$child"
 rc=$?
 trap - TERM INT HUP
+[ -n "$TOOL" ] && "$TOOL" sync push >> "$SUPPORT/sync.log" 2>&1         # the saves from this session to iCloud Drive (also after a crash)
 # 0 = window closed; 130, 137, 143 = interrupted, force-quit, terminated by the user or the system: not a crash
 if [ $rc -ne 0 ] && [ $rc -ne 130 ] && [ $rc -ne 137 ] && [ $rc -ne 143 ]; then
     say "The game ended unexpectedly (exit code $rc).

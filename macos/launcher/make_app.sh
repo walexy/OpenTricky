@@ -14,6 +14,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/Resources/ssx-tricky-bin"
 python3 "$HERE/make_resources.py" >/dev/null
 cp -R "$ROOT/port/assets" "$APP/Contents/Resources/assets"
+swiftc -O -swift-version 5 "$HERE/ot-tool.swift" -o "$APP/Contents/Resources/ot-tool" 2>&1 | grep -E "error" || true
+[ -x "$APP/Contents/Resources/ot-tool" ] || echo "(settings window not built: swiftc failed; the app still starts the game)"
 cp "$HERE/ssx-launcher.sh" "$APP/Contents/MacOS/SSX Tricky"
 chmod +x "$APP/Contents/MacOS/SSX Tricky" "$APP/Contents/Resources/ssx-tricky-bin"
 cat > "$APP/Contents/Info.plist" <<PLIST
