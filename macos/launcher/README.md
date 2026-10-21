@@ -53,3 +53,7 @@ Button pictures (`OT_BUTTONS`): the game's button prompts are redrawn as an Xbox
   replaces is first copied to `sync-backups/<time>/`; nothing is deleted by a sync. Without iCloud Drive, or with the switch off, it stays local.
   Not synced (machine-specific): `disc-image.txt`, `launcher-prefs.txt`, logs. Log of syncs: `sync.log`.
 - Tests: `OT_TEST_HOME=<dir>` points the tool at a fake home (`ot-tool sync push|pull`, `ot-tool selftest`).
+
+In the game: F11 / Alt+Enter full screen; Cmd+1..4 window size, F9 / F10 smaller / larger (OT_WINDOW_H sets the opening height);
+Cmd+, or F2, or the controller's Guide / PlayStation button (or Back+Start, i.e. Share+Options, together) open the settings window.
+Not done: a "Settings" entry inside the game's own menus (that needs a patch to the recompiled menu code).

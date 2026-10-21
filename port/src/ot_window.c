@@ -451,6 +451,17 @@ int ot_window_run(int (*guest)(void *), void *arg)
                 else if (ev.key.key == SDLK_4) window_height(win, 1080);
             }
 #endif
+#if !defined(_WIN32)
+            else if (ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                /* the settings window from the pad: the Guide / PlayStation button, or Back (Share) and Start (Options) together */
+                SDL_Gamepad *gp = SDL_GetGamepadFromID(ev.gbutton.which);
+                int b = ev.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_GUIDE ||
+                    (gp && ((b == SDL_GAMEPAD_BUTTON_START && SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_BACK)) ||
+                            (b == SDL_GAMEPAD_BUTTON_BACK && SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_START)))))
+                    open_settings(win);
+            }
+#endif
             else if (ev.type == SDL_EVENT_GAMEPAD_ADDED) pad_open_all();
             else if (ev.type == SDL_EVENT_GAMEPAD_REMOVED) {
                 int k;

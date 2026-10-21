@@ -292,7 +292,7 @@ struct SettingsView: View {
                     Pick(title: "Render resolution", choices: Model.heights, value: $m.renderH)
                     Pick(title: "Window size", choices: Model.windowHeights, value: $m.windowH)
                     Toggle("Start in full screen", isOn: $m.fullscreen)
-                    Text("In the game: F11 or Alt+Enter full screen, Cmd+1…4 window sizes, F9 / F10 smaller / larger (these leave full screen), F12 screenshot, Cmd+, or F2 this window.").font(.caption).foregroundStyle(.secondary)
+                    Text("In the game: F11 or Alt+Enter full screen, Cmd+1…4 window sizes, F9 / F10 smaller / larger (these leave full screen), F12 screenshot, Cmd+, or F2 (or the controller's PlayStation button, or Share+Options together) this window.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Frame rate") {
                     Pick(title: "Frame rate limit", choices: Model.fpsChoices, value: $m.fps)
