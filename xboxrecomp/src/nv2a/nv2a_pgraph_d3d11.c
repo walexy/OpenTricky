@@ -14,6 +14,7 @@
 #include "../kernel/xbox_perf.h"
 extern int d3d8_pump_cache_on(void);
 #include <time.h>
+#include "nv2a_par.h"
 #include "nv2a_pgraph_d3d11.h"
 #include "nv2a_regs.h"
 #include <stdio.h>
@@ -2094,10 +2095,10 @@ static int vsh_vertex(uint32_t idx, ProgVertex *ov, float *psize)
     ov->y = truncf(out[VSHCPU_OUT_POS][1] * 16.0f) / 16.0f;
     ov->z = (g_pg.clip_max > 0.0f) ? out[VSHCPU_OUT_POS][2] / g_pg.clip_max
                                    : out[VSHCPU_OUT_POS][2];
-    if (ov->z < 0.0f) g_vs.z_neg++;
-    else if (ov->z > 1.0f) g_vs.z_over++;
-    if (ov->x < -64.0f || ov->x > 704.0f || ov->y < -64.0f || ov->y > 544.0f) g_vs.xy_off++;
-    if (w <= 0.0f) g_vs.w_neg++;
+    if (ov->z < 0.0f) __atomic_fetch_add(&g_vs.z_neg, 1, __ATOMIC_RELAXED);      /* vertices run on several threads */
+    else if (ov->z > 1.0f) __atomic_fetch_add(&g_vs.z_over, 1, __ATOMIC_RELAXED);
+    if (ov->x < -64.0f || ov->x > 704.0f || ov->y < -64.0f || ov->y > 544.0f) __atomic_fetch_add(&g_vs.xy_off, 1, __ATOMIC_RELAXED);
+    if (w <= 0.0f) __atomic_fetch_add(&g_vs.w_neg, 1, __ATOMIC_RELAXED);
     /* Near-plane clipping, as xemu's vsh-prog.c: keep w's sign,
      * clamp it away from zero and infinity, and let the rasteriser clip in
      * homogeneous space -- d3d8_nv2a.c's VS multiplies x, y, z back by w.
@@ -3088,7 +3089,45 @@ static ProgVertex *vb_slot_get(void) { return g_vb_plain; }
 static void vb_slot_set(ProgVertex *v) { g_vb_plain = v; }
 #endif
 
+/* The vertex-program loops of draw_program run through nv2a_par_for (macOS: on several cores; elsewhere unchanged). */
+typedef struct {
+    const uint32_t *indices; uint32_t start; int points;
+    ProgVertex *vb; uint8_t *okb; float *psb;
+    ProgVertex *cv; uint8_t *cok; const uint32_t *need; uint32_t lo;
+} VshJob;
+#define VSH_PAR_MIN 128u
+static void vsh_job_seq(void *c, uint32_t a, uint32_t b)       /* start + i */
+{
+    VshJob *j = (VshJob *)c; uint32_t i;
+    for (i = a; i < b; i++) j->okb[i] = (uint8_t)vsh_vertex(j->start + i, &j->vb[i], j->points ? &j->psb[i] : NULL);
+}
+static void vsh_job_idx_points(void *c, uint32_t a, uint32_t b)  /* indices[i], with point sizes */
+{
+    VshJob *j = (VshJob *)c; uint32_t i;
+    for (i = a; i < b; i++) j->okb[i] = (uint8_t)vsh_vertex(j->indices[i], &j->vb[i], &j->psb[i]);
+}
+static void vsh_job_need(void *c, uint32_t a, uint32_t b)        /* the distinct indices of an indexed draw */
+{
+    VshJob *j = (VshJob *)c; uint32_t n;
+    for (n = a; n < b; n++) {
+        uint32_t idx = j->need[n], k = idx - j->lo;
+        j->cok[k] = (uint8_t)vsh_vertex(idx, &j->cv[k], NULL);
+    }
+}
+
+static uint64_t g_dp_ns, g_dp_calls, g_dp_verts, g_dp_vs_ns;   /* g_dp_vs_ns: the vertex-program loops alone */     /* time in draw_program (CPU vertex programs + submit), for the backend's log line */
+uint64_t pgraph_d3d11_draw_program_ns(uint64_t *calls, uint64_t *verts, uint64_t *vs_ns) { *calls = g_dp_calls; *verts = g_dp_verts; *vs_ns = g_dp_vs_ns; return g_dp_ns; }
+static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t count);
 static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count)
+{
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    draw_program_inner(indices, start, count);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    g_dp_ns += (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull + (uint64_t)(t1.tv_nsec - t0.tv_nsec);
+    g_dp_calls++; g_dp_verts += count;
+}
+static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t count)
 {
     static ProgVertex *tb = NULL;
     ProgVertex *vb;
@@ -3139,13 +3178,17 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
               && !(g_panel.on && !g_panel.scale_only && g_ph.phase == PGRAPH_PHASE_HUD)  /* panel ends: CPU */
               && gpu_prepare(&gd, indices, start, count);
     }
+    struct timespec vt0, vt1;
+    clock_gettime(CLOCK_MONOTONIC, &vt0);
     if (gpu) {
         n = gd.nindices;
         prim = gd.topology;
     } else if (indices && points) {
         /* Indexed points: no reuse to exploit, and each needs its size. */
-        for (i = 0; i < count; i++)
-            okb[i] = (uint8_t)vsh_vertex(indices[i], &vb[i], &psb[i]);
+        VshJob j; memset(&j, 0, sizeof j);
+        j.indices = indices; j.vb = vb; j.okb = okb; j.psb = psb;
+        va_const_init();
+        nv2a_par_for(count, VSH_PAR_MIN, vsh_job_idx_points, &j);
     } else if (indices) {
         /* An indexed list references each vertex several times; run the
          * program once per distinct index. Stamped slots avoid clearing the
@@ -3165,14 +3208,21 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
             cv = (ProgVertex *)malloc(VCACHE * sizeof *cv);
             cok = (uint8_t *)malloc(VCACHE);
         }
-        if (stamp && cv && cok && hi - lo < VCACHE) {
+        static uint32_t *need = NULL, need_cap = 0;
+        if (stamp && cv && cok && hi - lo < VCACHE && (count <= need_cap || (need = (uint32_t *)realloc(need, (need_cap = count) * sizeof *need)))) {
+            /* one program run per distinct index: mark them, run them (on several cores), then gather */
+            VshJob j; uint32_t nneed = 0;
             if (++now == 0) { memset(stamp, 0, VCACHE * sizeof *stamp); now = 1; }
             for (i = 0; i < count; i++) {
                 uint32_t k = indices[i] - lo;
-                if (stamp[k] != now) {
-                    cok[k] = (uint8_t)vsh_vertex(indices[i], &cv[k], NULL);
-                    stamp[k] = now;
-                }
+                if (stamp[k] != now) { stamp[k] = now; need[nneed++] = indices[i]; }
+            }
+            memset(&j, 0, sizeof j);
+            j.cv = cv; j.cok = cok; j.need = need; j.lo = lo;
+            va_const_init();
+            nv2a_par_for(nneed, VSH_PAR_MIN, vsh_job_need, &j);
+            for (i = 0; i < count; i++) {
+                uint32_t k = indices[i] - lo;
                 vb[i] = cv[k];
                 okb[i] = cok[k];
             }
@@ -3182,9 +3232,13 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
         }
         #undef VCACHE
     } else {
-        for (i = 0; i < count; i++)
-            okb[i] = (uint8_t)vsh_vertex(start + i, &vb[i], points ? &psb[i] : NULL);
+        VshJob j; memset(&j, 0, sizeof j);
+        j.start = start; j.points = points; j.vb = vb; j.okb = okb; j.psb = psb;
+        va_const_init();
+        nv2a_par_for(count, VSH_PAR_MIN, vsh_job_seq, &j);
     }
+    clock_gettime(CLOCK_MONOTONIC, &vt1);
+    g_dp_vs_ns += (uint64_t)(vt1.tv_sec - vt0.tv_sec) * 1000000000ull + (uint64_t)(vt1.tv_nsec - vt0.tv_nsec);
     /* XBOX_VSH_DUMPDRAW=N (diagnostic): for up to N large draws (>= 64
      * vertices, sampled every 2000th program draw), print the attribute
      * formats, the first vertex's inputs and the program's outputs. */

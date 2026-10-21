@@ -286,7 +286,8 @@ void d3d8_HostSetFullscreen(int on)                { if (d3d8_host_fullscreen_ho
 int  d3d8_HostIsFullscreen(void)                   { return d3d8_host_isfullscreen_hook ? d3d8_host_isfullscreen_hook() : 0; }
 void d3d8_HostExit(void)                           { exit(0); }
 HWND d3d8_GetHostWindow(void)                      { return NULL; }
-int  d3d8_monitor_hz(HWND hwnd)                    { (void)hwnd; return 60; }
+int  (*d3d8_monitor_hz_hook)(void);              /* the window (port/src/ot_window.c) reports its display's refresh rate */
+int  d3d8_monitor_hz(HWND hwnd)                    { (void)hwnd; int hz = d3d8_monitor_hz_hook ? d3d8_monitor_hz_hook() : 60; return hz > 0 ? hz : 60; }
 void d3d8_sync_set_pace(int fps)                   { (void)fps; }
 int  d3d8_post_split_wanted(void)                  { return 0; }
 void gpuprof_init(void)                            {}

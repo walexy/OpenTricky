@@ -35,6 +35,7 @@
 extern void d3d8_host_target_size(unsigned *w, unsigned *h);
 extern int d3d8_PresentBoxOn(void);
 extern double d3d8_PresentBoxShape(void);
+static uint64_t g_t_encode, g_t_acquire, g_t_submit;   /* where the backend's time goes (reported every 300 presents) */
 static unsigned g_tw = TITLE_W, g_th = TITLE_H;     /* the scene target's size (d3d8_host_target_size) */
 static SDL_GPUDevice *g_dev;
 static SDL_Window    *g_win;
@@ -585,7 +586,7 @@ static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int s
 {
     SDL_GPUTexture *sc = NULL; Uint32 w = 0, h = 0;
     SDL_GPUBlitInfo bi;
-    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, g_win, &sc, &w, &h) || !sc || !w || !h) return;
+    { uint64_t a0 = SDL_GetTicksNS(); int ok = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, g_win, &sc, &w, &h); g_t_acquire += SDL_GetTicksNS() - a0; if (!ok || !sc || !w || !h) return; }
     memset(&bi, 0, sizeof bi);
     bi.source.texture = src; bi.source.w = (Uint32)src_w; bi.source.h = (Uint32)src_h;
     bi.destination.texture = sc;
@@ -740,9 +741,7 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
         if (tb) SDL_ReleaseGPUTransferBuffer(g_dev, tb);
     } else {
         static unsigned scene_presents;
-        upload_arena(cmd);
-        upload_textures(cmd);
-        replay_ops(cmd);
+        { uint64_t e0 = SDL_GetTicksNS(); upload_arena(cmd); upload_textures(cmd); replay_ops(cmd); g_t_encode += SDL_GetTicksNS() - e0; }
         {   /* the scene's shape; a frame the translator marked as boxed (menus kept at the title's own shape) is squeezed
              * into a centred box of that shape */
             double a = d3d8_HostAspect(), box = d3d8_PresentBoxShape();
@@ -755,12 +754,21 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
             cmd = NULL;
         } else if (shot_wanted(scene_presents, 0)) { shot_save(cmd, g_rt, 0, scene_presents); cmd = NULL; }
     }
-    if (cmd) SDL_SubmitGPUCommandBuffer(cmd);
+    if (cmd) { uint64_t u0 = SDL_GetTicksNS(); SDL_SubmitGPUCommandBuffer(cmd); g_t_submit += SDL_GetTicksNS() - u0; }
     reset_frame();
     if ((frames + 1) % 300 == 0) {   /* presents per second and the time the game thread spent in present_now, every 300 presents */
         static uint64_t t0, busy_prev; uint64_t busy = g_busy_ns - busy_prev, now = SDL_GetTicksNS();
-        if (t0) fprintf(stderr, "[GPU] %.1f presents/s (%.1f ms/present in the backend), %u shaders, %d pipelines\n",
-                        300e9 / (double)(now - t0), (double)busy / 300e6, g_npsh, g_npc);
+        if (t0) fprintf(stderr, "[GPU] %.1f presents/s (%.1f ms/present in the backend: encode %.1f, swapchain wait %.1f, submit %.1f), %u shaders, %d pipelines\n",
+                        300e9 / (double)(now - t0), (double)busy / 300e6, (double)g_t_encode / 300e6, (double)g_t_acquire / 300e6,
+                        (double)g_t_submit / 300e6, g_npsh, g_npc);
+        {   /* the translator's time in draw_program (CPU vertex programs): per present */
+            extern uint64_t pgraph_d3d11_draw_program_ns(uint64_t *calls, uint64_t *verts, uint64_t *vs_ns);
+            static uint64_t pn, pc, pv, pvs; uint64_t c, v, vs, n = pgraph_d3d11_draw_program_ns(&c, &v, &vs);
+            if (t0) fprintf(stderr, "[GPU]   draw_program %.1f ms/present, of it the vertex programs %.1f (%.0f draws, %.0f vertices per present)\n",
+                            (double)(n - pn) / 300e6, (double)(vs - pvs) / 300e6, (double)(c - pc) / 300.0, (double)(v - pv) / 300.0);
+            pn = n; pc = c; pv = v; pvs = vs;
+        }
+        g_t_encode = g_t_acquire = g_t_submit = 0;
         t0 = now; busy_prev = g_busy_ns;
     }
     if ((++frames % 600) == 0 && g_dropped) { fprintf(stderr, "[GPU] %u draws dropped (frame buffers full)\n", g_dropped); g_dropped = 0; }

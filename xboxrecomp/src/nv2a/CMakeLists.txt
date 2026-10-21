@@ -12,6 +12,7 @@ set(NV2A_SOURCES
     nv2a_core.c
     nv2a_vsh_cpu.c
     nv2a_psh.c
+    nv2a_par.c
     nv2a_pb_replay.c
     nv2a_mmio_hook.c
     nv2a_pb_test.c

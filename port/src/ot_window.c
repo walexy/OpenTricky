@@ -117,6 +117,43 @@ static double choose_display(void)
     return A;
 }
 
+/* ---- frame rate and presentation ---------------------------------------------------------------------------------------
+ * The game's own pacing above 60 (fps_cap.c: extra renders between the 60 Hz ticks, with interpolation) is chosen by
+ * XBOX_FPS_CAP (60 | 120 | 144 | 240 | N | 0 = no limit | monitor); OT_FPS is the short name. It only makes extra frames if
+ * a present does not wait for the display, so a cap above 60 presents without waiting unless vsync is asked for.
+ * XBOX_SYNC / OT_VSYNC:  vsync (one frame per refresh at most, the cap is lowered to the display's rate), adaptive
+ * (mailbox presentation where the system has it: the newest frame is shown at each refresh, no tearing, no waiting),
+ * off or unset with a cap above 60 (present at once: tearing possible in full screen); unset at 60: vsync. */
+static int s_display_hz = 60;
+static int hook_monitor_hz(void) { return s_display_hz; }
+extern int (*d3d8_monitor_hz_hook)(void);
+
+static SDL_GPUPresentMode choose_present_mode(SDL_GPUDevice *gd, SDL_Window *win)
+{
+    const char *fps = getenv("OT_FPS"), *vs = getenv("OT_VSYNC");
+    SDL_DisplayID d = SDL_GetPrimaryDisplay();
+    const SDL_DisplayMode *m = d ? SDL_GetDesktopDisplayMode(d) : NULL;
+    int above60;
+    const char *sync;
+    if (fps && fps[0] && !getenv("XBOX_FPS_CAP")) setenv("XBOX_FPS_CAP", fps, 1);
+    if (vs && vs[0] && !getenv("XBOX_SYNC")) setenv("XBOX_SYNC", vs, 1);
+    if (m && m->refresh_rate > 1.0f) s_display_hz = (int)(m->refresh_rate + 0.5f);
+    d3d8_monitor_hz_hook = hook_monitor_hz;
+    {
+        const char *c = getenv("XBOX_FPS_CAP");
+        above60 = c && c[0] && (!strcmp(c, "0") || (!strcmp(c, "monitor") ? s_display_hz > 61 : atoi(c) > 60));
+    }
+    sync = getenv("XBOX_SYNC");
+    fprintf(stderr, "[WINDOW] display %d Hz, frame limit %s, sync %s\n", s_display_hz,
+            getenv("XBOX_FPS_CAP") ? getenv("XBOX_FPS_CAP") : "60", sync && sync[0] ? sync : "default");
+    if (sync && !strcmp(sync, "vsync")) return SDL_GPU_PRESENTMODE_VSYNC;
+    if (sync && !strcmp(sync, "adaptive"))
+        return SDL_WindowSupportsGPUPresentMode(gd, win, SDL_GPU_PRESENTMODE_MAILBOX) ? SDL_GPU_PRESENTMODE_MAILBOX
+                                                                                     : SDL_GPU_PRESENTMODE_IMMEDIATE;
+    if ((sync && !strcmp(sync, "off")) || above60) return SDL_GPU_PRESENTMODE_IMMEDIATE;
+    return SDL_GPU_PRESENTMODE_VSYNC;
+}
+
 static void screenshot_request(void)
 {
     extern void d3d8_gpu_request_screenshot(const char *path);
@@ -272,7 +309,7 @@ int ot_window_run(int (*guest)(void *), void *arg)
             SDL_Quit();
             return guest(arg);
         }
-        SDL_SetGPUSwapchainParameters(gd, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC);
+        SDL_SetGPUSwapchainParameters(gd, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, choose_present_mode(gd, win));
         d3d8_gpu_attach(gd, win);
         fprintf(stderr, "[WINDOW] GPU renderer on %s\n", SDL_GetGPUDeviceDriver(gd));
         ren = NULL;
