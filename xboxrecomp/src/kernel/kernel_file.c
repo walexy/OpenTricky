@@ -1044,7 +1044,6 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
                 size_t name_len = strlen(e->name);
                 /* never write past the caller's buffer (the entry is the fixed part plus the name) */
                 if ((size_t)Length < offsetof(XBOX_FILE_DIRECTORY_INFORMATION, FileName) + name_len + 1) {
-                    LeaveCriticalSection(&cs);
                     IoStatusBlock->Status = STATUS_BUFFER_OVERFLOW;
                     IoStatusBlock->Information = 0;
                     return STATUS_BUFFER_OVERFLOW;

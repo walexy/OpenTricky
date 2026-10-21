@@ -636,7 +636,9 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             if (!cc && !cz && !cs) continue;
             if (pass) { SDL_EndGPURenderPass(pass); pass = NULL; }
             /* a colour clear that covers the target, and depth / stencil (cleared whole, as on the D3D11 layer) */
-            pass = begin_pass(cmd, cc && full, o->color, cz, o->z, cs, (Uint8)o->stencil);
+            /* a clear that is the target's first use also initialises whatever it does not clear (first_pass), and ends that state */
+            pass = begin_pass(cmd, (cc && full) || first_pass, o->color, cz || first_pass, o->z, cs || first_pass, (Uint8)o->stencil);
+            first_pass = 0;
             if (!pass) continue;
             if (cc && !full && o->count) {
                 PKey k; SDL_GPUGraphicsPipeline *p; SDL_GPUBufferBinding bb; SDL_Rect all = { 0, 0, (int)g_tw, (int)g_th };
