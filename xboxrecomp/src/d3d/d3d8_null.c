@@ -333,9 +333,11 @@ IDirect3DDevice8 *xbox_GetD3DDevice(void) { return NULL; }   /* no device: nothi
 
 #endif
 
+#if !defined(OT_GPU)       /* the GPU backend (d3d8_gpu.c) builds real textures */
 HRESULT d3d8_CreateTextureFromLevels(UINT w, UINT h, UINT levels, const void *const *bits,
                                      IDirect3DTexture8 **ppTex)
 { (void)w; (void)h; (void)levels; (void)bits; if (ppTex) *ppTex = NULL; return (HRESULT)0x8876086C; /* D3DERR_INVALIDCALL */ }
+#endif
 
 #if !defined(OT_GPU)   /* a GPU build uses the real translator (nv2a_pgraph_d3d11.c) */
 /* ======================================================================= */
@@ -478,6 +480,7 @@ int pgraph_d3d11_method(int subchannel, uint32_t method, uint32_t param)
 /* OpenTricky texture features that live in the dropped translator side    */
 /* ======================================================================= */
 
+#if !defined(OT_GPU)   /* the GPU build compiles the real ones (nv2a_btnicons.c, nv2a_hdtex.c) */
 /* Button icons (nv2a_btnicons.c) and HD textures (nv2a_hdtex.c) replace what the
  * renderer samples. The port still configures and queries them: all off here. */
 int btnicons_on(void)                 { return 0; }
@@ -496,3 +499,4 @@ int btnicons_lesson_shape(int i, unsigned *shape, float game[6], float pic[6])
 int btnicons_lesson_mark(int row, float *dx, float *dy)
 { (void)row; (void)dx; (void)dy; return 0; }
 void hdtex_set_builtin_index(const char *text, size_t len) { (void)text; (void)len; }
+#endif /* !OT_GPU */

@@ -20,6 +20,8 @@ Change it with a file `~/Library/Application Support/OpenTricky/display.env` (re
     OT_SHAPE=21:9        # auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number such as 2.39
     OT_RENDER_H=1440     # rows the GPU draws (480 or more; the width follows the shape)
     OT_FULLSCREEN=1      # start in full screen
+    OT_BUTTONS=playstation   # button pictures in menus and HUD: modern | playstation | ps2 (default: the game's own Xbox glyphs)
+    OT_HD_TEXTURES=/path/to/pack   # your HD texture pack folder (DDS files, not included); OT_HD_MENUS=1: menus too
     OT_HDR=on            # HDR / wide-gamut output (see below); tune with OT_HDR_GAMUT (0..1), OT_HDR_WARM (0..0.5), OT_HDR_BOOST (0..1)
     OT_SMAA=high         # smoother edges (SMAA) on the 3D: off (default) | low | medium | high | ultra; HUD and menus stay sharp
     OT_SOFT_SHADOWS=on   # soft shadow edges (default off)
@@ -32,3 +34,5 @@ The shape is fixed at start (the game is told its screen shape then), so changin
 Frame rates above 60: the game keeps its logic at 60 Hz and draws extra frames in between, interpolating the camera and riders (port/src/fps_cap.c). Set `OT_FPS`; extra frames are only visible if your display refreshes faster than 60 Hz (on a 60 Hz display the frames are produced and presented but cannot all be shown; `OT_VSYNC=vsync` then caps the rate to the display). Tearing is possible with `off` or above 60 in full screen.
 
 HDR and wide gamut (`OT_HDR=on`): the game's picture is SDR, made for a TV. On a wide-gamut HDR display the app asks for an HDR (extended linear) window and runs a colour pass (`xboxrecomp/src/d3d/d3d8_gpu_out.c`) that reads the colours as Display P3 instead of sRGB (saturated oranges, yellows and reds reach what the panel can show; greys and white stay put), adds a little more chroma to oranges and yellows (`OT_HDR_WARM`), and lifts bright, saturated highlights (fire, lamps, the game's gold) towards the display's HDR headroom, which macOS reports per window and changes with the display's brightness (1.2 on the development machine, so the lift is small there). Without an HDR display the option is ignored. `macos/hdr_test/hdr_test.c` checks the colour maths on known colours.
+
+Button pictures (`OT_BUTTONS`): the game's button prompts are redrawn as an Xbox Series pad, a PlayStation pad or the PS2 style, from the CC0 drawings in `port/assets/btnicons/` (copied into the app). HD textures (`OT_HD_TEXTURES`): point it at your copy of the community pack (a folder of `.dds` files, or the folder above its `replacements` folder; not included): the game's textures are looked up by hash in `port/assets/hdtex_index.txt` and replaced when the pack has them. Both are off by default.

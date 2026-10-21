@@ -12,6 +12,8 @@ APP="$OUT/SSX Tricky.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/Resources/ssx-tricky-bin"
+python3 "$HERE/make_resources.py" >/dev/null
+cp -R "$ROOT/port/assets" "$APP/Contents/Resources/assets"
 cp "$HERE/ssx-launcher.sh" "$APP/Contents/MacOS/SSX Tricky"
 chmod +x "$APP/Contents/MacOS/SSX Tricky" "$APP/Contents/Resources/ssx-tricky-bin"
 cat > "$APP/Contents/Info.plist" <<PLIST

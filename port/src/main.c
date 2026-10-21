@@ -1122,7 +1122,13 @@ int WINAPI OT_WINMAIN(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         HGLOBAL g = r ? LoadResource(NULL, r) : NULL;
         const char *text = g ? (const char *)LockResource(g) : NULL;
         if (text) hdtex_set_builtin_index(text, SizeofResource(NULL, r));
-#endif    /* no resources outside Windows: the index is not built in */
+#else
+        {   /* not Windows: the index is a file of the assets folder (platform/ot_assets.c) */
+            extern const void *ot_asset(const char *name, size_t *size);
+            size_t n = 0; const char *text = (const char *)ot_asset("HDTEX_INDEX", &n);
+            if (text) hdtex_set_builtin_index(text, n);
+        }
+#endif
     }
     /* Fork: three branches the lifter cut from their flags, never taken until the
      * generated code got the condition back (fork pass fix_deadflags.py).

@@ -1849,3 +1849,27 @@ DWORD GetFullPathNameA(LPCSTR path, DWORD size, LPSTR out, LPSTR *filePart)
 }
 
 #endif /* !_WIN32 */
+
+
+/* ---- one-time initialisation, processor count -------------------------------------------------------------- */
+static pthread_mutex_t g_once_lock = PTHREAD_MUTEX_INITIALIZER;
+
+BOOL InitOnceExecuteOnce(PINIT_ONCE once, PINIT_ONCE_FN fn, PVOID param, PVOID *ctx)
+{
+    BOOL ok = TRUE;
+    pthread_mutex_lock(&g_once_lock);
+    if (once->state == 0) {
+        ok = fn ? fn(once, param, ctx) : TRUE;
+        once->state = ok ? 2 : 0;
+    }
+    pthread_mutex_unlock(&g_once_lock);
+    return ok;
+}
+
+VOID GetSystemInfo(LPSYSTEM_INFO si)
+{
+    long n = sysconf(_SC_NPROCESSORS_ONLN), pg = sysconf(_SC_PAGESIZE);
+    if (!si) return;
+    si->dwNumberOfProcessors = n > 0 ? (DWORD)n : 1;
+    si->dwPageSize = pg > 0 ? (DWORD)pg : 4096;
+}

@@ -1481,12 +1481,19 @@ int g_gpuprof_on;
 volatile double g_tex_upload_ms;
 volatile long g_tex_uploads_log;
 void gpuprof_set_phase(int phase, int group) { (void)phase; (void)group; }
-int  hdtex_on(void) { return 0; }
-uint64_t hdtex_budget(void) { return 0; }
-HdJob *hdtex_request(const uint8_t *l0, uint32_t n0, uint32_t w, uint32_t h) { (void)l0; (void)n0; (void)w; (void)h; return NULL; }
-int  hdtex_collect(HdJob *j, IDirect3DTexture8 **t, uint32_t *b) { (void)j; (void)t; (void)b; return 0; }
-void hdtex_cancel(HdJob *j) { (void)j; }
-void hdtex_note_evicted(uint32_t b, int over) { (void)b; (void)over; }
+/* A texture from finished BGRA levels (HD replacements, composed button atlases): never locked again by the caller. */
+HRESULT d3d8_CreateTextureFromLevels(UINT w, UINT h, UINT levels, const void *const *bits, IDirect3DTexture8 **ppTex)
+{
+    IDirect3DTexture8 *t = NULL;
+    Tex *tt; UINT i;
+    HRESULT hr = dev_createtexture(NULL, w, h, levels, 0, (D3DFORMAT)0x12, 0, &t);
+    if (FAILED(hr) || !t) return hr;
+    tt = (Tex *)t;
+    for (i = 0; i < tt->levels; i++) if (bits && bits[i]) memcpy(tt->data[i], bits[i], tt->size[i]);
+    tt->dirty = 1;
+    if (ppTex) *ppTex = t;
+    return 0;
+}
 
 
 /* ================================================================= */

@@ -55,6 +55,8 @@ ln -sf "$BIN" "$LINK"
 # optional display settings: ~/Library/Application Support/OpenTricky/display.env, lines like
 #   OT_SHAPE=21:9        auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number
 #   OT_RENDER_H=1440     height of the picture the GPU draws (default 1080 wide, 960 at 4:3)
+#   OT_BUTTONS=playstation  button pictures in the menus and HUD: modern (Xbox Series) | playstation | ps2 (default: the game's own)
+#   OT_HD_TEXTURES=/path/to/pack   your HD texture pack folder (the DDS files; not included); OT_HD_MENUS=1 also for menus
 #   OT_HDR=on            HDR / wide-gamut output on an HDR display: saturated colours (oranges, yellows) reach what the panel can show
 #                        (tune: OT_HDR_GAMUT=0..1 default 1, OT_HDR_WARM=0..0.5 default 0.2, OT_HDR_BOOST=0..1 default 1)
 #   OT_SMAA=high         smoother edges on the 3D picture (HUD and menus stay sharp): off (default) | low | medium | high | ultra
@@ -64,6 +66,7 @@ ln -sf "$BIN" "$LINK"
 #   OT_FULLSCREEN=1      start in full screen (F11 or Alt+Enter toggles; F12 saves a screenshot to ~/Pictures/OpenTricky)
 if [ -f "$SUPPORT/display.env" ]; then set -a; . "$SUPPORT/display.env"; set +a; fi
 
+export OT_ASSET_DIR="$HERE/../Resources/assets"      # the button pictures and the HD index (resources.txt lists them)
 cd "$SUPPORT" || exit 1
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
 "$LINK" --direct "$ISO" > "$LOG" 2>&1

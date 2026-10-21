@@ -97,6 +97,13 @@ BOOL TryEnterCriticalSection(LPCRITICAL_SECTION cs);
 VOID DeleteCriticalSection(LPCRITICAL_SECTION cs);
 
 /* ---- Condition variables (paired with a CRITICAL_SECTION) ----------- */
+/* One-time initialisation (InitOnceExecuteOnce) and the processor count (GetSystemInfo), as far as the port needs them. */
+typedef struct _INIT_ONCE { volatile LONG state; } INIT_ONCE, *PINIT_ONCE;
+#define INIT_ONCE_STATIC_INIT { 0 }
+typedef BOOL (*PINIT_ONCE_FN)(PINIT_ONCE once, PVOID param, PVOID *ctx);
+BOOL InitOnceExecuteOnce(PINIT_ONCE once, PINIT_ONCE_FN fn, PVOID param, PVOID *ctx);
+typedef struct _SYSTEM_INFO { DWORD dwPageSize; DWORD dwNumberOfProcessors; } SYSTEM_INFO, *LPSYSTEM_INFO;
+VOID GetSystemInfo(LPSYSTEM_INFO si);
 VOID InitializeConditionVariable(PCONDITION_VARIABLE cv);
 BOOL SleepConditionVariableCS(PCONDITION_VARIABLE cv, PCRITICAL_SECTION cs, DWORD ms);
 VOID WakeConditionVariable(PCONDITION_VARIABLE cv);
