@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "d3d8_gpu_clip.h"
 #define TITLE_W 640
 #define TITLE_H 480
 #define E_NOTIMPL_ ((HRESULT)0x80004001)
@@ -576,15 +577,7 @@ static float scene_comp_amount(void);
  * uses it), is scaled to the scene target and clamped to it. Returns 0 if nothing of it is inside the target (the draw is then skipped). */
 static int scissor_rect(const Op *o, SDL_Rect *r)
 {
-    double gsx = (double)g_tw / (double)TITLE_W, gsy = (double)g_th / (double)TITLE_H;
-    double x0 = (double)o->sc[0] * gsx, y0 = (double)o->sc[1] * gsy, x1 = (double)o->sc[2] * gsx, y1 = (double)o->sc[3] * gsy;
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > (double)g_tw) x1 = (double)g_tw;
-    if (y1 > (double)g_th) y1 = (double)g_th;
-    if (!(x1 > x0) || !(y1 > y0)) return 0;
-    r->x = (int)x0; r->y = (int)y0; r->w = (int)x1 - r->x; r->h = (int)y1 - r->y;
-    return r->w > 0 && r->h > 0;
+    return gpu_clip_rect(o->sc, g_tw, g_th, TITLE_W, TITLE_H, &r->x, &r->y, &r->w, &r->h);
 }
 
 static void replay_ops(SDL_GPUCommandBuffer *cmd)
