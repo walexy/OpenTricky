@@ -2262,6 +2262,10 @@ static void bridge_build_oa(uint32_t obj_attrs_va,
 static void file_ledger_open(HANDLE h, const char *path);
 static void file_ledger_read(HANDLE h, uint32_t n);
 
+/* After a save folder is created on the save drive (a create with disposition 2 under "U:\"), the next kernel calls are traced in full
+ * (minus the busiest, uninteresting ones): the save's own steps, to find the one that goes wrong. */
+static volatile int s_save_trace = 0;
+
 /* Open a file by delegating to the ported xbox_NtCreateFile kernel HLE. */
 static NTSTATUS bridge_create_file_impl(
     uint32_t handle_va, ACCESS_MASK access, uint32_t obj_attrs_va,
@@ -2323,6 +2327,7 @@ static NTSTATUS bridge_create_file_impl(
 
     st = xbox_NtCreateFile(&h, access, &oa, &ios, NULL,
                            file_attrs, share, disposition, options);
+    if (disposition == 2 && !strncmp(name.Buffer, "U:\\", 3) && name.Buffer[3]) { s_save_trace = 2500; fprintf(stderr, "  [KTRACE] save folder created: tracing the next kernel calls\n"); }
 
     fprintf(stderr, "  [FILE] create/open: path=\"%s\" -> status=0x%08X iso=%d\n", name.Buffer, (uint32_t)st,
             xbox_iso_handles_in_use());
@@ -4578,6 +4583,12 @@ static void kernel_thunk_dispatch(void)
         fflush(stderr);
     }
 
+    if (s_save_trace > 0 && ordinal != 277 && ordinal != 294 && ordinal != 125 && ordinal != 150 && ordinal != 158 && ordinal != 99 &&
+        ordinal != 160 && ordinal != 161 && ordinal != 225 && ordinal != 145) {
+        s_save_trace--;
+        fprintf(stderr, "  [KTRACE] %u %s -> 0x%08X\n", ordinal, bridge_ordinal_name(ordinal), g_eax);
+        fflush(stderr);
+    }
     {   /* A kernel call that failed (an NTSTATUS error, severity bits 11) is reported even when the general call trace is throttled:
          * a few lines per call, so a title that checks a result we get wrong shows up (the save's XCreateSaveGame was found this way). */
         static struct { uint32_t key; uint8_t n; } seen[512];       /* per (call, status) */
