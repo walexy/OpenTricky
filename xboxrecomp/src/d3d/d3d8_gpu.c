@@ -185,6 +185,11 @@ static SDL_GPUGraphicsPipeline *pipeline_for(const PKey *k)
     SDL_GPUGraphicsPipeline *p;
     int i;
     for (i = 0; i < g_npc; i++) if (!memcmp(&g_pc[i].k, k, sizeof *k)) return g_pc[i].p;
+    if (g_npc >= (int)(sizeof g_pc / sizeof g_pc[0])) {   /* full: no compile, no leak -- the draw is skipped */
+        static int told;
+        if (!told) { told = 1; fprintf(stderr, "[GPU] pipeline cache full (%d): draws with a new state are skipped\n", g_npc); }
+        return NULL;
+    }
 
     memset(&pi, 0, sizeof pi); memset(&ct, 0, sizeof ct);
     memset(&vb, 0, sizeof vb); memset(at, 0, sizeof at);
@@ -234,13 +239,7 @@ static SDL_GPUGraphicsPipeline *pipeline_for(const PKey *k)
     pi.target_info.depth_stencil_format = g_ds_fmt; pi.target_info.has_depth_stencil_target = true;
     p = SDL_CreateGPUGraphicsPipeline(g_dev, &pi);
     if (!p) fprintf(stderr, "[GPU] pipeline failed: %s\n", SDL_GetError());
-    if (g_npc < (int)(sizeof g_pc / sizeof g_pc[0])) { g_pc[g_npc].k = *k; g_pc[g_npc].p = p; g_npc++; }
-    else {   /* full: not cached, so not kept (it would leak one pipeline per draw) -- the draw is skipped */
-        static int told;
-        if (p) SDL_ReleaseGPUGraphicsPipeline(g_dev, p);
-        if (!told) { told = 1; fprintf(stderr, "[GPU] pipeline cache full (%d): further new states are not drawn\n", g_npc); }
-        return NULL;
-    }
+    g_pc[g_npc].k = *k; g_pc[g_npc].p = p; g_npc++;     /* a failed creation is cached too (NULL): not retried every draw */
     return p;
 }
 
@@ -620,10 +619,7 @@ static void present_now(const uint8_t *movie_rgba, unsigned mw, unsigned mh)
     if (movie_rgba && (mw != TITLE_W || mh != TITLE_H)) {
         static int told;
         if (!told) { told = 1; fprintf(stderr, "[GPU] movie frame is %ux%u, not %dx%d: not shown\n", mw, mh, TITLE_W, TITLE_H); }
-        movie_rgba = NULL; mw = mh = 0;
-        reset_frame();
-        SDL_SubmitGPUCommandBuffer(cmd);
-        return;
+        movie_rgba = NULL; mw = mh = 0;       /* only the movie upload is skipped: the scene below is still presented */
     }
     if (movie_rgba && mw && mh) {
         SDL_GPUTransferBufferCreateInfo ti; SDL_GPUTransferBuffer *tb; void *map;
