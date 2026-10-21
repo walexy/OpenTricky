@@ -2283,6 +2283,26 @@ static NTSTATUS bridge_create_file_impl(
     }
     fprintf(stderr, "  [FILE] create/open: path=\"%s\" disposition=0x%X share=0x%X\n",
             name.Buffer, disposition, share);
+    {   /* A path made of the game's 0xDEADC0DE "never written" fill: a buffer used before it was filled (the save's Data.ssx open).
+         * Report where it lives and who called, once per open, so the code that should have written it can be found. */
+        static int told;
+        if (told < 6 && memmem(name.Buffer, strlen(name.Buffer), "\xDE\xC0\xAD\xDE", 4)) {
+            uint32_t as = BRIDGE_MEM32(obj_attrs_va + 4), bv = as ? BRIDGE_MEM32(as + 4) : 0, k;
+            void *fr[16];
+            unsigned short c = (unsigned short)CaptureStackBackTrace(0, 16, fr, NULL), i;
+            uintptr_t mb = (uintptr_t)GetModuleHandleW(NULL);
+            told++;
+            fprintf(stderr, "  [FILE] UNINITIALISED PATH: ObjectName at 0x%08X, Length %u, Buffer 0x%08X, root 0x%08X; host frames:",
+                    as, as ? BRIDGE_MEM16(as) : 0, bv, BRIDGE_MEM32(obj_attrs_va));
+            for (i = 0; i < c; i++)
+                fprintf(stderr, " 0x%llX", (unsigned long long)(0x140000000ULL + ((uintptr_t)fr[i] - mb)));
+            fprintf(stderr, "\n  [FILE]   the 64 bytes before the buffer:");
+            for (k = 0; bv >= 64 && k < 64; k++) fprintf(stderr, " %02X", BRIDGE_MEM8(bv - 64 + k));
+            fprintf(stderr, "\n  [FILE]   the last 32 bytes of the string:");
+            for (k = 0; as && k < 32 && BRIDGE_MEM16(as) >= 32; k++) fprintf(stderr, " %02X", BRIDGE_MEM8(bv + BRIDGE_MEM16(as) - 32 + k));
+            fprintf(stderr, "\n");
+        }
+    }
     {   /* A create (not an open) of a name ending in '\' is a file name that
          * came out empty (the save image copy). Report who built
          * it -- host frames resolve with addr2line, image base 0x140000000. */
