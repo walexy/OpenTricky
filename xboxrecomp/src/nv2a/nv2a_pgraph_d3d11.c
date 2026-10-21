@@ -3115,16 +3115,27 @@ static void vsh_job_need(void *c, uint32_t a, uint32_t b)        /* the distinct
     }
 }
 
+/* Monotonic nanoseconds for the draw_program timing lines (QueryPerformanceCounter on Windows: no clock_gettime there). */
+static uint64_t dp_now_ns(void)
+{
+#if defined(_WIN32)
+    LARGE_INTEGER f, t;
+    QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t);
+    return (uint64_t)((double)t.QuadPart * 1e9 / (double)f.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
+}
 static uint64_t g_dp_ns, g_dp_calls, g_dp_verts, g_dp_vs_ns;   /* g_dp_vs_ns: the vertex-program loops alone */     /* time in draw_program (CPU vertex programs + submit), for the backend's log line */
 uint64_t pgraph_d3d11_draw_program_ns(uint64_t *calls, uint64_t *verts, uint64_t *vs_ns) { *calls = g_dp_calls; *verts = g_dp_verts; *vs_ns = g_dp_vs_ns; return g_dp_ns; }
 static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t count);
 static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count)
 {
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    uint64_t t0 = dp_now_ns();
     draw_program_inner(indices, start, count);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    g_dp_ns += (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull + (uint64_t)(t1.tv_nsec - t0.tv_nsec);
+    g_dp_ns += dp_now_ns() - t0;
     g_dp_calls++; g_dp_verts += count;
 }
 static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t count)
@@ -3178,8 +3189,7 @@ static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t
               && !(g_panel.on && !g_panel.scale_only && g_ph.phase == PGRAPH_PHASE_HUD)  /* panel ends: CPU */
               && gpu_prepare(&gd, indices, start, count);
     }
-    struct timespec vt0, vt1;
-    clock_gettime(CLOCK_MONOTONIC, &vt0);
+    uint64_t vt0 = dp_now_ns();
     if (gpu) {
         n = gd.nindices;
         prim = gd.topology;
@@ -3188,7 +3198,7 @@ static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t
         VshJob j; memset(&j, 0, sizeof j);
         j.indices = indices; j.vb = vb; j.okb = okb; j.psb = psb;
         va_const_init();
-        nv2a_par_for(count, VSH_PAR_MIN, vsh_job_idx_points, &j);
+        nv2a_par_for(count, g_pg.prog_writes_c ? 0x7fffffffu : VSH_PAR_MIN, vsh_job_idx_points, &j);
     } else if (indices) {
         /* An indexed list references each vertex several times; run the
          * program once per distinct index. Stamped slots avoid clearing the
@@ -3209,7 +3219,7 @@ static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t
             cok = (uint8_t *)malloc(VCACHE);
         }
         static uint32_t *need = NULL, need_cap = 0;
-        if (stamp && cv && cok && hi - lo < VCACHE && (count <= need_cap || (need = (uint32_t *)realloc(need, (need_cap = count) * sizeof *need)))) {
+        if (stamp && cv && cok && hi - lo < VCACHE && (count <= need_cap || ({ uint32_t *nn = (uint32_t *)realloc(need, (size_t)count * sizeof *need); if (nn) { need = nn; need_cap = count; } nn != NULL; }))) {
             /* one program run per distinct index: mark them, run them (on several cores), then gather */
             VshJob j; uint32_t nneed = 0;
             if (++now == 0) { memset(stamp, 0, VCACHE * sizeof *stamp); now = 1; }
@@ -3220,7 +3230,7 @@ static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t
             memset(&j, 0, sizeof j);
             j.cv = cv; j.cok = cok; j.need = need; j.lo = lo;
             va_const_init();
-            nv2a_par_for(nneed, VSH_PAR_MIN, vsh_job_need, &j);
+            nv2a_par_for(nneed, g_pg.prog_writes_c ? 0x7fffffffu : VSH_PAR_MIN, vsh_job_need, &j);
             for (i = 0; i < count; i++) {
                 uint32_t k = indices[i] - lo;
                 vb[i] = cv[k];
@@ -3235,10 +3245,9 @@ static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t
         VshJob j; memset(&j, 0, sizeof j);
         j.start = start; j.points = points; j.vb = vb; j.okb = okb; j.psb = psb;
         va_const_init();
-        nv2a_par_for(count, VSH_PAR_MIN, vsh_job_seq, &j);
+        nv2a_par_for(count, g_pg.prog_writes_c ? 0x7fffffffu : VSH_PAR_MIN, vsh_job_seq, &j);
     }
-    clock_gettime(CLOCK_MONOTONIC, &vt1);
-    g_dp_vs_ns += (uint64_t)(vt1.tv_sec - vt0.tv_sec) * 1000000000ull + (uint64_t)(vt1.tv_nsec - vt0.tv_nsec);
+    g_dp_vs_ns += dp_now_ns() - vt0;
     /* XBOX_VSH_DUMPDRAW=N (diagnostic): for up to N large draws (>= 64
      * vertices, sampled every 2000th program draw), print the attribute
      * formats, the first vertex's inputs and the program's outputs. */

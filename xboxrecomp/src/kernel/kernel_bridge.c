@@ -608,7 +608,11 @@ static void bridge_PsCreateSystemThreadEx(void)
                 /* Main game thread: run directly, inheriting register state */
                 int terminated;
                 if (xbox_handle_ptr) {
+#if defined(_WIN32)      /* the Windows build keeps writing the raw handle value, as before the macOS port */
+                    BRIDGE_MEM32(xbox_handle_ptr) = (uint32_t)(uintptr_t)GetCurrentThread();
+#else
                     bridge_write_handle(xbox_handle_ptr, GetCurrentThread());
+#endif
                 }
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context2;
                 g_esp -= 4; BRIDGE_MEM32(g_esp) = start_context1;
@@ -648,8 +652,12 @@ static void bridge_PsCreateSystemThreadEx(void)
 
                 hThread = CreateThread(NULL, 0, xbox_worker_thread_trampoline, params, 0, NULL);
                 if (hThread) {
-                    bridge_write_handle(xbox_handle_ptr, hThread);
-                    fprintf(stderr, "  [KERNEL]   worker thread handle %p -> token 0x%08X written to 0x%08X\n",
+#if defined(_WIN32)
+                    if (xbox_handle_ptr) BRIDGE_MEM32(xbox_handle_ptr) = (uint32_t)(uintptr_t)hThread;
+#else
+                    bridge_write_handle(xbox_handle_ptr, hThread);     /* host handles are 64-bit: a token in the 32-bit guest slot */
+#endif
+                    fprintf(stderr, "  [KERNEL]   worker thread handle %p -> 0x%08X written to 0x%08X\n",
                             hThread, xbox_handle_ptr ? BRIDGE_MEM32(xbox_handle_ptr) : 0u, xbox_handle_ptr);
                     fflush(stderr);
                     /* Intentionally not closed here -- the game may later wait on

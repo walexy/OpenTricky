@@ -1454,10 +1454,10 @@ NTSTATUS __stdcall xbox_NtReadFile(
         return STATUS_INVALID_HANDLE;
     }
 
-    if (ByteOffset && ByteOffset->QuadPart >= 0)
-        lseek(fd, (off_t)ByteOffset->QuadPart, SEEK_SET);
-
-    ssize_t n = read(fd, Buffer, Length);
+    /* positioned read: pread leaves the shared fd offset alone, so two threads reading one handle cannot interleave */
+    ssize_t n = (ByteOffset && ByteOffset->QuadPart >= 0)
+              ? pread(fd, Buffer, Length, (off_t)ByteOffset->QuadPart)
+              : read(fd, Buffer, Length);
     if (n < 0) {
         XBOX_TRACE(XBOX_LOG_FILE, "NtReadFile(handle=%p) errno=%d", FileHandle, errno);
         IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
@@ -1497,10 +1497,9 @@ NTSTATUS __stdcall xbox_NtWriteFile(
         return STATUS_INVALID_HANDLE;
     }
 
-    if (ByteOffset && ByteOffset->QuadPart >= 0)
-        lseek(fd, (off_t)ByteOffset->QuadPart, SEEK_SET);
-
-    ssize_t n = write(fd, Buffer, Length);
+    ssize_t n = (ByteOffset && ByteOffset->QuadPart >= 0)
+              ? pwrite(fd, Buffer, Length, (off_t)ByteOffset->QuadPart)
+              : write(fd, Buffer, Length);
     if (n < 0) {
         XBOX_TRACE(XBOX_LOG_FILE, "NtWriteFile(handle=%p) errno=%d", FileHandle, errno);
         IoStatusBlock->Status = STATUS_UNSUCCESSFUL;
@@ -1868,6 +1867,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
                 size_t name_len = strlen(e->name);
                 /* never write past the caller's buffer (the entry is the fixed part plus the name) */
                 if ((size_t)Length < offsetof(XBOX_FILE_DIRECTORY_INFORMATION, FileName) + name_len + 1) {
+                    LeaveCriticalSection(&cs);          /* was returning with the section held: every later query deadlocked */
                     IoStatusBlock->Status = STATUS_BUFFER_OVERFLOW;
                     IoStatusBlock->Information = 0;
                     return STATUS_BUFFER_OVERFLOW;

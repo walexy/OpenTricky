@@ -65,13 +65,18 @@ ln -sf "$BIN" "$LINK"
 #   OT_FPS=120           frame rate limit: 60 (default) | 120 | 144 | 240 | a number | 0 (no limit) | monitor (your display's rate)
 #   OT_VSYNC=vsync       vsync | adaptive | off (default: vsync at 60; present at once above 60)
 #   OT_FULLSCREEN=1      start in full screen (F11 or Alt+Enter toggles; F12 saves a screenshot to ~/Pictures/OpenTricky)
-if [ -f "$SUPPORT/display.env" ]; then set -a; . "$SUPPORT/display.env"; set +a; fi
+if [ -f "$SUPPORT/display.env" ]; then set -a; eval "$(tr -d '\r' < "$SUPPORT/display.env")"; set +a; fi     # CR-tolerant (a file saved with Windows line endings)
 
 export OT_ASSET_DIR="$HERE/../Resources/assets"      # the button pictures and the HD index (resources.txt lists them)
 cd "$SUPPORT" || exit 1
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
-"$LINK" --direct "$ISO" > "$LOG" 2>&1
+rm -f "$SUPPORT/crash.txt.old"; [ -f "$SUPPORT/crash.txt" ] && mv -f "$SUPPORT/crash.txt" "$SUPPORT/crash.txt.old"    # a report shown below is from this run
+"$LINK" --direct "$ISO" > "$LOG" 2>&1 &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP     # quitting the app (Dock, shutdown) stops the game too, not just this wrapper
+wait "$child"
 rc=$?
+trap - TERM INT HUP
 # 0 = window closed; 130, 137, 143 = interrupted, force-quit, terminated by the user or the system: not a crash
 if [ $rc -ne 0 ] && [ $rc -ne 130 ] && [ $rc -ne 137 ] && [ $rc -ne 143 ]; then
     say "The game ended unexpectedly (exit code $rc).

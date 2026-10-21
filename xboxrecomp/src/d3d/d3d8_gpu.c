@@ -355,8 +355,10 @@ static unsigned g_vsh_draws, g_vsh_dropped;
 static uint32_t arena_add(const void *v, uint32_t n_verts, uint32_t stride, int convert_ffp)
 {
     uint32_t first = g_arena_used / 116u, i;
-    uint32_t bytes = n_verts * 116u;
-    if (g_arena_used + bytes > ARENA_MAX) return (uint32_t)-1;
+    uint64_t bytes64 = (uint64_t)n_verts * 116u;
+    uint32_t bytes;
+    if ((uint64_t)g_arena_used + bytes64 > ARENA_MAX) return (uint32_t)-1;     /* 64-bit: n_verts comes from the guest */
+    bytes = (uint32_t)bytes64;
     if (!convert_ffp) {
         if (stride == 116u) memcpy(g_arena + g_arena_used, v, bytes);
         else for (i = 0; i < n_verts; i++) memcpy(g_arena + g_arena_used + i * 116u, (const uint8_t *)v + i * stride, 116u);
@@ -414,6 +416,7 @@ static void record_draw(int prim, uint32_t nverts, const void *v, uint32_t strid
 
 static uint32_t prim_verts(int prim, uint32_t pc)
 {
+    if (pc > 16u * 1024u * 1024u) return 0;      /* far beyond any real draw: no wrap-around in the size arithmetic below */
     switch (prim) {
     case D3DPT_POINTLIST: return pc;
     case D3DPT_LINELIST: return pc * 2;
@@ -569,6 +572,21 @@ static void upbuf_put(SDL_GPUCommandBuffer *cmd, UpBuf *u, SDL_GPUBufferUsageFla
 static int smaa_preset(void);
 static float scene_comp_amount(void);
 
+/* The window-clip scissor of a draw: the rectangle comes from the translator in title pixels with an EXCLUSIVE end (as the D3D11 layer
+ * uses it), is scaled to the scene target and clamped to it. Returns 0 if nothing of it is inside the target (the draw is then skipped). */
+static int scissor_rect(const Op *o, SDL_Rect *r)
+{
+    double gsx = (double)g_tw / (double)TITLE_W, gsy = (double)g_th / (double)TITLE_H;
+    double x0 = (double)o->sc[0] * gsx, y0 = (double)o->sc[1] * gsy, x1 = (double)o->sc[2] * gsx, y1 = (double)o->sc[3] * gsy;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (double)g_tw) x1 = (double)g_tw;
+    if (y1 > (double)g_th) y1 = (double)g_th;
+    if (!(x1 > x0) || !(y1 > y0)) return 0;
+    r->x = (int)x0; r->y = (int)y0; r->w = (int)x1 - r->x; r->h = (int)y1 - r->y;
+    return r->w > 0 && r->h > 0;
+}
+
 static void replay_ops(SDL_GPUCommandBuffer *cmd)
 {
     SDL_GPURenderPass *pass = NULL;
@@ -619,6 +637,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             if (pass) { SDL_EndGPURenderPass(pass); pass = NULL; }
             /* a colour clear that covers the target, and depth / stencil (cleared whole, as on the D3D11 layer) */
             pass = begin_pass(cmd, cc && full, o->color, cz, o->z, cs, (Uint8)o->stencil);
+            if (!pass) continue;
             if (cc && !full && o->count) {
                 PKey k; SDL_GPUGraphicsPipeline *p; SDL_GPUBufferBinding bb; SDL_Rect all = { 0, 0, (int)g_tw, (int)g_th };
                 float screen[4] = { TITLE_W, TITLE_H, 0, 0 }, fs[8] = { 0, 0, 0, 0, 0, 1, 1, 0 };
@@ -638,17 +657,15 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             continue;
         }
         if (!pass) { pass = begin_pass(cmd, first_pass, black, first_pass, 1.0f, first_pass, 0); first_pass = 0; }
+        if (!pass) continue;
         if (o->vsh) {   /* a vertex program draw: the shader fetches from the raw buffer, indexed */
             SDL_GPUGraphicsPipeline *p = pipeline_for(&o->key);
             SDL_GPUBufferBinding ib;
             if (!p || !g_rbuf.buf || !g_ibuf.buf || !bind_samplers(pass, o)) continue;
             SDL_BindGPUGraphicsPipeline(pass, p);
             if (o->scissor_on) {
-                float gsx = (float)g_tw / (float)TITLE_W, gsy = (float)g_th / (float)TITLE_H;
-                SDL_Rect r; r.x = (int)(o->sc[0] * gsx); r.y = (int)(o->sc[1] * gsy);
-                r.w = (int)((o->sc[2] + 1) * gsx) - r.x; r.h = (int)((o->sc[3] + 1) * gsy) - r.y;
-                if (r.x < 0) { r.w += r.x; r.x = 0; } if (r.y < 0) { r.h += r.y; r.y = 0; }
-                if (r.w < 0) r.w = 0; if (r.h < 0) r.h = 0;
+                SDL_Rect r;
+                if (!scissor_rect(o, &r)) continue;       /* clipped away entirely */
                 SDL_SetGPUScissor(pass, &r);
             } else {
                 SDL_Rect r = { 0, 0, (int)g_tw, (int)g_th }; SDL_SetGPUScissor(pass, &r);
@@ -671,11 +688,8 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             if (!p || !g_vbuf || !bind_samplers(pass, o)) continue;
             SDL_BindGPUGraphicsPipeline(pass, p);
             if (o->scissor_on) {
-                float gsx = (float)g_tw / (float)TITLE_W, gsy = (float)g_th / (float)TITLE_H;   /* clip rectangles are in title pixels */
-                SDL_Rect r; r.x = (int)(o->sc[0] * gsx); r.y = (int)(o->sc[1] * gsy);
-                r.w = (int)((o->sc[2] + 1) * gsx) - r.x; r.h = (int)((o->sc[3] + 1) * gsy) - r.y;
-                if (r.x < 0) { r.w += r.x; r.x = 0; } if (r.y < 0) { r.h += r.y; r.y = 0; }
-                if (r.w < 0) r.w = 0; if (r.h < 0) r.h = 0;
+                SDL_Rect r;
+                if (!scissor_rect(o, &r)) continue;       /* clipped away entirely */
                 SDL_SetGPUScissor(pass, &r);
             } else {
                 SDL_Rect r = { 0, 0, (int)g_tw, (int)g_th }; SDL_SetGPUScissor(pass, &r);
@@ -699,16 +713,19 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
 /* HDR / wide-gamut output (d3d8_gpu_out.c): set by the window when it got an HDR swapchain (OT_HDR=on). Strengths from
  * OT_HDR_GAMUT (default 1), OT_HDR_WARM (0.1), OT_HDR_BOOST (0.35); OT_HDR_PEAK caps the headroom used (default 1.5: colourful highlights may go to at most 1.5x SDR white, however much room the display reports). The
  * display's headroom is read from the window each frame: it changes with the display's brightness. */
-static int g_hdr;
+static volatile int g_hdr;      /* written by the window thread, read by the pump thread */
 void d3d8_gpu_set_hdr(int on) { g_hdr = on; }
 /* OT_HDR_SCENE (default 0.45): the share of the wide-gamut expansion the 3D picture gets, against 1 for the HUD and menus. The 3D
  * is made less saturated before the final pass (d3d8_gpu_out.c, gpu_out_scene_comp) at the FRAME_END marker. 0 = the amount is
  * returned as how far to move the colours back (1 - share); 0 = nothing to do. */
+static float envf(const char *name, float dflt);
 static float scene_comp_amount(void)
 {
-    static float k = -2.0f;
-    if (k < -1.0f) { const char *e = getenv("OT_HDR_SCENE"); k = (e && e[0]) ? (float)atof(e) : 0.45f; if (k < 0.0f) k = 0.0f; if (k > 1.0f) k = 1.0f; }
-    return g_hdr && k < 1.0f ? 1.0f - k : 0.0f;
+    static float k = -2.0f, g = 1.0f;
+    if (k < -1.0f) { const char *e = getenv("OT_HDR_SCENE"); k = (e && e[0]) ? (float)atof(e) : 0.45f; if (k < 0.0f) k = 0.0f; if (k > 1.0f) k = 1.0f;
+        g = envf("OT_HDR_GAMUT", 1.0f); if (g < 0.0f) g = 0.0f; if (g > 1.0f) g = 1.0f; }
+    /* the colour pass applies the gamut matrix with strength g, so the compensation scales with it (no gamut expansion, nothing to undo) */
+    return g_hdr && k < 1.0f ? (1.0f - k) * g : 0.0f;
 }
 static float envf(const char *name, float dflt)
 {
@@ -840,9 +857,9 @@ static char g_shot_req_path[1024];
 static volatile int g_shot_req;
 void d3d8_gpu_request_screenshot(const char *path)
 {
-    if (!path) return;
+    if (!path || g_shot_req) return;       /* one request at a time: the path is not rewritten while the pump may read it */
     snprintf(g_shot_req_path, sizeof g_shot_req_path, "%s", path);
-    g_shot_req = 1;
+    __atomic_store_n(&g_shot_req, 1, __ATOMIC_RELEASE);
 }
 
 /* The scene (recorded draws) or a movie frame (RGBA from the guest framebuffer) reaches the window. */
@@ -895,7 +912,7 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
     } else {
         static unsigned scene_presents;   /* (also read, as g_scene_presents, by the soft shadow test switch) */
         { uint64_t e0 = SDL_GetTicksNS(); upload_arena(cmd);
-          upbuf_put(cmd, &g_rbuf, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, g_raw, g_raw_used);
+          upbuf_put(cmd, &g_rbuf, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, g_raw, g_raw_used ? g_raw_used : (g_raw ? 16u : 0u));
           upbuf_put(cmd, &g_ibuf, SDL_GPU_BUFFERUSAGE_INDEX, g_idxa, g_idx_used * 4u);
           upload_textures(cmd); replay_ops(cmd); g_t_encode += SDL_GetTicksNS() - e0; }
         {   /* the scene's shape; a frame the translator marked as boxed (menus kept at the title's own shape) is squeezed
@@ -959,7 +976,7 @@ int  d3d8_post_split_wanted(void) { return smaa_preset() > 0 || scene_comp_amoun
 void d3d8_PassPhaseChanged(int old_phase, int new_phase, unsigned tag)
 {
     (void)old_phase; (void)tag;
-    if (new_phase != 5 /* PGRAPH_PHASE_END */ || (smaa_preset() <= 0 && scene_comp_amount() <= 0.0f)) return;
+    if (new_phase != 5 /* PGRAPH_PHASE_END */ || !g_ops || (smaa_preset() <= 0 && scene_comp_amount() <= 0.0f)) return;
     op_new(OP_FRAME_END);
 }
 
@@ -1146,7 +1163,7 @@ static HRESULT __stdcall dev_createtexture(IDirect3DDevice8 *self, UINT w, UINT 
 {
     Tex *t; UINT i, lw, lh;
     (void)self; (void)usage; (void)pool;
-    if (!w || !h) return (HRESULT)0x8876086C;
+    if (!w || !h || w > 8192 || h > 8192) return (HRESULT)0x8876086C;     /* D3DERR_INVALIDCALL: also keeps lw * lh * 4 from wrapping */
     if (!levels) levels = 1;
     if (levels > 16) levels = 16;
     t = (Tex *)calloc(1, sizeof *t);
@@ -1160,6 +1177,7 @@ static HRESULT __stdcall dev_createtexture(IDirect3DDevice8 *self, UINT w, UINT 
             t->pitch[i] = bw * bs; t->size[i] = bw * bh * bs;
         } else { t->pitch[i] = lw * 4; t->size[i] = lw * lh * 4; }
         t->data[i] = (uint8_t *)calloc(1, t->size[i]);
+        if (!t->data[i]) { UINT k; for (k = 0; k < i; k++) free(t->data[k]); free(t); return (HRESULT)0x8007000E; }   /* E_OUTOFMEMORY */
     }
     *out = (IDirect3DTexture8 *)t;
     return 0;
@@ -1361,7 +1379,18 @@ int d3d8_nv2a_add_ps(unsigned long long key, const char *msl, int len)
     return 1;
 }
 
-static HRESULT __stdcall dev_settexture(IDirect3DDevice8 *s, DWORD st, IDirect3DBaseTexture8 *t) { (void)s; if (st < 4) g_bound[st] = t; return 0; }
+/* SetTexture keeps a reference on the bound texture (the translator may release it while it is still bound). */
+static HRESULT __stdcall dev_settexture(IDirect3DDevice8 *s, DWORD st, IDirect3DBaseTexture8 *t)
+{
+    IDirect3DBaseTexture8 *old;
+    (void)s;
+    if (st >= 4) return 0;
+    old = g_bound[st];
+    if (t) ((Tex *)t)->ref++;
+    g_bound[st] = t;
+    if (old) tex_release((IDirect3DTexture8 *)old);
+    return 0;
+}
 static HRESULT __stdcall dev_gettexture(IDirect3DDevice8 *s, DWORD st, IDirect3DBaseTexture8 **t) { (void)s; if (t) *t = st < 4 ? g_bound[st] : NULL; return 0; }
 static HRESULT __stdcall dev_setrs(IDirect3DDevice8 *s, D3DRENDERSTATETYPE st, DWORD v) { (void)s; if ((unsigned)st < 512) g_rs[st] = v; return 0; }
 static HRESULT __stdcall dev_getrs(IDirect3DDevice8 *s, D3DRENDERSTATETYPE st, DWORD *v) { (void)s; *v = (unsigned)st < 512 ? g_rs[st] : 0; return 0; }
@@ -1415,6 +1444,7 @@ static void gpu_init_tables(void)
     state_defaults();
     g_ops = (Op *)calloc(MAX_OPS, sizeof(Op));
     g_arena = (uint8_t *)malloc(ARENA_MAX);
+    if (!g_ops || !g_arena) { free(g_ops); free(g_arena); g_ops = NULL; g_arena = NULL; fprintf(stderr, "[GPU] out of memory for the frame buffers: nothing will be drawn\n"); }
     d3d8_present_hook = present_hook;
 }
 
@@ -1655,7 +1685,7 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
         if (!(d->inputs & (1u << a))) continue;
         if (!vsh_attr_fmt(d, a, &descf[a], &descsz[a])) { g_vsh_dropped++; return 0; }
     }
-    if (g_raw_used + need_raw > RAW_MAX || g_idx_used + d->nindices > IDX_MAX) { g_vsh_dropped++; return 1; }
+    if ((uint64_t)g_raw_used + need_raw > RAW_MAX || (uint64_t)g_idx_used + d->nindices > IDX_MAX) { g_vsh_dropped++; return 1; }
     o = op_new(OP_DRAW);
     if (!o) return 1;
 

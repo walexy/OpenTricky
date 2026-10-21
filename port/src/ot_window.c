@@ -8,6 +8,9 @@
 #if defined(OT_HAVE_WINDOW)
 
 #include <pthread.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #include <time.h>
 #include <sys/stat.h>
 #include <SDL3/SDL.h>
@@ -102,15 +105,16 @@ static double choose_display(void)
     else if (!strcmp(sh, "16:9")) A = 16.0 / 9.0;
     else if (!strcmp(sh, "21:9")) A = 64.0 / 27.0;          /* 2560x1080 / 3440x1440 are 2.37 / 2.39 */
     else if (!strcmp(sh, "32:9")) A = 32.0 / 9.0;
-    else { A = atof(sh); if (A < 1.4) A = 0.0; }
+    else { A = atof(sh); if (A < 1.4) A = 0.0; if (A > 4.0) A = 4.0; }      /* bounded: a stray value must not ask for a huge render target */
     if (A > 1.0) {
         char buf[64]; const char *rh = getenv("OT_RENDER_H"); unsigned h = (rh && atoi(rh) >= 480) ? (unsigned)atoi(rh) : 1080u;
+        if (h > 4320u) h = 4320u;
         unsigned w = (unsigned)(h * A + 0.5) & ~1u;
         setenv("XBOX_ASPECT", "auto", 1);
         snprintf(buf, sizeof buf, "%ux%u", w, h & ~1u);
         setenv("XBOX_RENDER", buf, 1);
     } else if (getenv("OT_RENDER_H") && atoi(getenv("OT_RENDER_H")) >= 480) {
-        char buf[64]; unsigned h = (unsigned)atoi(getenv("OT_RENDER_H")) & ~1u;
+        char buf[64]; unsigned h = (unsigned)atoi(getenv("OT_RENDER_H")); if (h > 4320u) h = 4320u; h &= ~1u;
         snprintf(buf, sizeof buf, "%ux%u", (unsigned)(h * 4 / 3) & ~1u, h);
         setenv("XBOX_RENDER", buf, 1);
     }
@@ -438,7 +442,7 @@ int ot_window_run(int (*guest)(void *), void *arg)
     if (quit) {
         fprintf(stderr, "[WINDOW] closed: exiting\n");
         fflush(NULL);
-        exit(0);        /* the game threads are killed with the process */
+        _exit(0);       /* the game threads are killed with the process; no atexit handlers or destructors run under them */
     }
     pthread_join(th, NULL);
     if (tex) SDL_DestroyTexture(tex);

@@ -219,6 +219,9 @@ static char **g_argv;
 static const char *find_iso_argument(void)
 {
     int i;
+    /* the path right after --direct is the disc image whatever it is called (.iso, .xiso, .img ...) */
+    for (i = 1; i + 1 < g_argc; i++)
+        if (!strcmp(g_argv[i], "--direct") && g_argv[i + 1][0] && g_argv[i + 1][0] != '-') return g_argv[i + 1];
     for (i = 1; i < g_argc; i++) {
         size_t len = strlen(g_argv[i]);
         if (len > 4 && strcasecmp(g_argv[i] + len - 4, ".iso") == 0) return g_argv[i];
