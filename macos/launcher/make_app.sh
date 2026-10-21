@@ -47,4 +47,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 codesign --force --deep -s - "$APP" >/dev/null 2>&1 && echo "signed ad hoc" || echo "(codesign failed; the app still runs from a local build)"
+# Finder and the Dock cache bundle icons by path: refresh the registration so a rebuilt app shows its current icon
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" >/dev/null 2>&1 || true
+touch "$APP"
 echo "built: $APP"

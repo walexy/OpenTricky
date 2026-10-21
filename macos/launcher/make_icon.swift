@@ -51,10 +51,10 @@ ctx.restoreGState()
 
 // wordmark
 let para = NSMutableParagraphStyle(); para.alignment = .center
-let font = NSFont.systemFont(ofSize: 250, weight: .black)
-let shadow = NSShadow(); shadow.shadowColor = rgb(40, 10, 70, 0.7); shadow.shadowOffset = NSSize(width: 0, height: -10); shadow.shadowBlurRadius = 18
-let text = NSAttributedString(string: "SSX", attributes: [.font: font, .foregroundColor: NSColor.white, .paragraphStyle: para, .kern: 6, .shadow: shadow,
-                                                           .obliqueness: 0.22, .strokeColor: rgb(60, 24, 110), .strokeWidth: -5])
+let font = NSFont.systemFont(ofSize: 210, weight: .black)
+let shadow = NSShadow(); shadow.shadowColor = rgb(255, 255, 255, 0.85); shadow.shadowOffset = NSSize(width: 0, height: -6); shadow.shadowBlurRadius = 18
+let text = NSAttributedString(string: "OSSX", attributes: [.font: font, .foregroundColor: rgb(54, 20, 104), .paragraphStyle: para, .kern: 6, .shadow: shadow,
+                                                           .obliqueness: 0.22])
 text.draw(in: NSRect(x: 100, y: 150, width: 824, height: 300))
 ctx.restoreGState()
 

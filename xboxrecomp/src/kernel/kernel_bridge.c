@@ -4578,6 +4578,18 @@ static void kernel_thunk_dispatch(void)
         fflush(stderr);
     }
 
+    {   /* A kernel call that failed (an NTSTATUS error, severity bits 11) is reported even when the general call trace is throttled:
+         * a few lines per call, so a title that checks a result we get wrong shows up (the save's XCreateSaveGame was found this way). */
+        static struct { uint32_t key; uint8_t n; } seen[512];       /* per (call, status) */
+        uint32_t key = (uint32_t)slot * 0x9E3779B1u ^ g_eax, h = key % 512u;
+        if ((g_eax & 0xC0000000u) == 0xC0000000u && (long)g_kernel_call_count > kernel_call_log_limit() &&
+            (seen[h].key == key || !seen[h].n) && seen[h].n < 4) {
+            seen[h].key = key; seen[h].n++;
+            fprintf(stderr, "  [KERNEL] failed call: ordinal %u %s -> 0x%08X\n", ordinal, bridge_ordinal_name(ordinal), g_eax);
+            fflush(stderr);
+        }
+    }
+
     /* A point between two kernel calls of this guest thread, where an
      * interrupt pending on a device can be delivered (see xbox_kernel_call_isr). */
     if (xbox_kernel_post_call_hook)
