@@ -721,8 +721,7 @@ static void hdr_params(GpuOutParams *p)
     float hr = 1.0f;
     if (gamut < 0) { gamut = envf("OT_HDR_GAMUT", 1.0f); warm = envf("OT_HDR_WARM", 0.1f); boost = envf("OT_HDR_BOOST", 0.35f); peak = envf("OT_HDR_PEAK", 1.5f); }
     if (g_win) hr = SDL_GetFloatProperty(SDL_GetWindowProperties(g_win), SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
-    if (hr < 1.0f) hr = 1.0f;
-    if (hr > peak) hr = peak;
+    hr = gpu_out_effective_headroom(hr, peak);
     p->gamut = gamut; p->warm = warm; p->boost = boost; p->headroom = hr;
 }
 

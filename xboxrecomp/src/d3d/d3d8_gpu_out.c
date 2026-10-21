@@ -85,6 +85,14 @@ static const char k_msl[] =
     "    return float4(c, 1.0);\n"
     "}\n";
 
+float gpu_out_effective_headroom(float reported, float peak)
+{
+    float hr = reported, cap = peak;
+    if (!(cap >= 1.0f)) cap = 1.0f;        /* also catches NaN and 0 (a non-numeric OT_HDR_PEAK) */
+    if (!(hr >= 1.0f)) hr = 1.0f;          /* also NaN */
+    return hr > cap ? cap : hr;
+}
+
 char *gpu_out_source(void)
 {
     char *s = (char *)malloc(sizeof k_msl);

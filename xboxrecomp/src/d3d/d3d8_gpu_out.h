@@ -11,6 +11,10 @@ typedef struct {
     float headroom;     /* the display's HDR headroom above SDR white (1 = none): from the window; capped by the caller */
 } GpuOutParams;
 
+/* The headroom the colour pass may use: what the display reports, capped at `peak` (OT_HDR_PEAK), never below 1 (no headroom)
+ * whatever the two values are (a peak below 1, zero or NaN, a report of 0 or NaN all give 1). */
+float gpu_out_effective_headroom(float reported, float peak);
+
 /* The shader source (malloc'd). */
 char *gpu_out_source(void);
 

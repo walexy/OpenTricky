@@ -209,6 +209,18 @@ int main(void)
             if (minstep < 0.30f * basestep) { bad++; printf("  FAIL: highlight steps squeezed below 30%% of the plain ones\n"); }
         }
     }
+    {   /* the headroom clamp the game applies (d3d8_gpu.c hdr_params uses this function) */
+        static const float cases[][3] = {   /* reported, peak, expected */
+            { 3.59f, 1.5f, 1.5f }, { 1.2f, 1.5f, 1.2f }, { 0.8f, 1.5f, 1.0f }, { 3.0f, 0.5f, 1.0f }, { 3.0f, 0.0f, 1.0f },
+            { 3.0f, 1.0f, 1.0f }, { 0.0f, 4.0f, 1.0f }, { 2.0f, 4.0f, 2.0f } };
+        int c;
+        for (c = 0; c < (int)(sizeof cases / sizeof cases[0]); c++) {
+            float g = gpu_out_effective_headroom(cases[c][0], cases[c][1]);
+            if (fabsf(g - cases[c][2]) > 1e-6f) { bad++; printf("  FAIL: headroom(reported %.2f, peak %.2f) = %.3f, expected %.3f\n", cases[c][0], cases[c][1], g, cases[c][2]); }
+        }
+        if (gpu_out_effective_headroom(NAN, 1.5f) != 1.0f || gpu_out_effective_headroom(2.0f, NAN) != 1.0f) { bad++; printf("  FAIL: NaN headroom or peak\n"); }
+        printf("headroom clamp: %d cases checked\n", (int)(sizeof cases / sizeof cases[0]) + 2);
+    }
     printf("%s\n", bad ? "FAILED" : "all checks held");
     return bad != 0;
 }
