@@ -3038,9 +3038,39 @@ static int draw_is_perspective(const uint32_t *indices, uint32_t start, uint32_t
     return fabsf(1.0f / v.rhw - 1.0f) > 1e-3f;
 }
 
+/* The CPU-transformed vertex buffer pointer of draw_program lives alone on a page that is read-only except while the
+ * pointer is being replaced (POSIX hosts). A rare crash was traced to this pointer holding 0x100000106: with the page
+ * protected, whatever writes it stray faults at once, and the crash report names the writer. */
+#if !defined(_WIN32)
+#include <sys/mman.h>
+static ProgVertex **g_vb_slot;
+static ProgVertex *vb_slot_get(void)
+{
+    if (!g_vb_slot) {
+        void *pg = mmap(NULL, 16384, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (pg == MAP_FAILED) { static ProgVertex *fallback; g_vb_slot = &fallback; return NULL; }
+        *(ProgVertex **)pg = NULL;
+        mprotect(pg, 16384, PROT_READ);
+        g_vb_slot = (ProgVertex **)pg;
+    }
+    return *g_vb_slot;
+}
+static void vb_slot_set(ProgVertex *v)
+{
+    void *pg = (void *)g_vb_slot;
+    if (pg && ((uintptr_t)pg & 16383u) == 0) { mprotect(pg, 16384, PROT_READ | PROT_WRITE); *g_vb_slot = v; mprotect(pg, 16384, PROT_READ); }
+    else *g_vb_slot = v;
+}
+#else
+static ProgVertex *g_vb_plain;
+static ProgVertex *vb_slot_get(void) { return g_vb_plain; }
+static void vb_slot_set(ProgVertex *v) { g_vb_plain = v; }
+#endif
+
 static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count)
 {
-    static ProgVertex *vb = NULL, *tb = NULL;
+    static ProgVertex *tb = NULL;
+    ProgVertex *vb;
     static uint8_t *okb = NULL;
     static float *psb = NULL;               /* point sizes, for mode 1 */
     static uint32_t cap = 0;
@@ -3054,13 +3084,14 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
 
     if (count == 0)
         return;
+    vb = vb_slot_get();
     if (count > cap) {
         uint32_t c = count < 4096 ? 4096 : count;
         ProgVertex *a = (ProgVertex *)realloc(vb, c * sizeof *a);
         ProgVertex *b;
         uint8_t *k;
         if (!a) return;
-        vb = a;
+        vb = a; vb_slot_set(a);
         b = (ProgVertex *)realloc(tb, 6u * c * sizeof *b);
         if (!b) return;
         tb = b;

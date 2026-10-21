@@ -646,7 +646,16 @@ static void shot_save(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *tex, int rgba_o
 }
 
 /* The scene (recorded draws) or a movie frame (RGBA from the guest framebuffer) reaches the window. */
+static uint64_t g_busy_ns;
+static unsigned g_npsh;
+static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned mh);
 static void present_now(const uint8_t *movie_rgba, unsigned mw, unsigned mh)
+{
+    uint64_t b0 = SDL_GetTicksNS();
+    present_now_inner(movie_rgba, mw, mh);
+    g_busy_ns += SDL_GetTicksNS() - b0;
+}
+static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned mh)
 {
     SDL_GPUCommandBuffer *cmd;
     static unsigned frames; static int announced;
@@ -694,6 +703,12 @@ static void present_now(const uint8_t *movie_rgba, unsigned mw, unsigned mh)
     }
     if (cmd) SDL_SubmitGPUCommandBuffer(cmd);
     reset_frame();
+    if ((frames + 1) % 300 == 0) {   /* presents per second and the time the game thread spent in present_now, every 300 presents */
+        static uint64_t t0, busy_prev; uint64_t busy = g_busy_ns - busy_prev, now = SDL_GetTicksNS();
+        if (t0) fprintf(stderr, "[GPU] %.1f presents/s (%.1f ms/present in the backend), %u shaders, %d pipelines\n",
+                        300e9 / (double)(now - t0), (double)busy / 300e6, g_npsh, g_npc);
+        t0 = now; busy_prev = g_busy_ns;
+    }
     if ((++frames % 600) == 0 && g_dropped) { fprintf(stderr, "[GPU] %u draws dropped (frame buffers full)\n", g_dropped); g_dropped = 0; }
 }
 
