@@ -3043,23 +3043,40 @@ static int draw_is_perspective(const uint32_t *indices, uint32_t start, uint32_t
  * protected, whatever writes it stray faults at once, and the crash report names the writer. */
 #if !defined(_WIN32)
 #include <sys/mman.h>
+#include <errno.h>
+#include <string.h>
 static ProgVertex **g_vb_slot;
+static int g_vb_protected;       /* 1 only if the page really is read-only; otherwise this is a plain static and says so */
+static void vb_slot_report(const char *what)
+{
+    static int told;
+    if (!told) { told = 1; fprintf(stderr, "[NV2A] vb guard page: %s failed: %s; the guard is off\n", what, strerror(errno)); }
+    g_vb_protected = 0;
+}
 static ProgVertex *vb_slot_get(void)
 {
     if (!g_vb_slot) {
+        /* a private anonymous mapping of its own: page-aligned, nothing else lives on it, so protecting it affects only
+         * this pointer */
         void *pg = mmap(NULL, 16384, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (pg == MAP_FAILED) { static ProgVertex *fallback; g_vb_slot = &fallback; return NULL; }
+        static ProgVertex *fallback;
+        if (pg == MAP_FAILED) { vb_slot_report("mmap"); g_vb_slot = &fallback; return NULL; }
         *(ProgVertex **)pg = NULL;
-        mprotect(pg, 16384, PROT_READ);
         g_vb_slot = (ProgVertex **)pg;
+        if (mprotect(pg, 16384, PROT_READ) != 0) vb_slot_report("mprotect(read-only)"); else { g_vb_protected = 1; fprintf(stderr, "[NV2A] vb guard page active (read-only, %p)\n", pg); }
     }
     return *g_vb_slot;
 }
 static void vb_slot_set(ProgVertex *v)
 {
-    void *pg = (void *)g_vb_slot;
-    if (pg && ((uintptr_t)pg & 16383u) == 0) { mprotect(pg, 16384, PROT_READ | PROT_WRITE); *g_vb_slot = v; mprotect(pg, 16384, PROT_READ); }
-    else *g_vb_slot = v;
+    if (g_vb_protected) {
+        void *pg = (void *)g_vb_slot;
+        if (mprotect(pg, 16384, PROT_READ | PROT_WRITE) != 0) { vb_slot_report("mprotect(read-write)"); *g_vb_slot = v; return; }
+        *g_vb_slot = v;
+        if (mprotect(pg, 16384, PROT_READ) != 0) vb_slot_report("mprotect(read-only, again)");
+    } else {
+        *g_vb_slot = v;
+    }
 }
 #else
 static ProgVertex *g_vb_plain;
