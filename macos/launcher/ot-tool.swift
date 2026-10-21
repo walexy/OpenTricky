@@ -130,12 +130,16 @@ enum Sync {
         } catch { log.append("copy failed: \(dst.lastPathComponent): \(error.localizedDescription)"); return false }
     }
 
-    static func backupLocal(_ rel: String, stamp: String) {
+    /// false = a local file exists and could not be saved aside: the caller must not replace it
+    static func backupLocal(_ rel: String, stamp: String) -> Bool {
         let src = Store.local.appendingPathComponent(rel)
-        guard fm.fileExists(atPath: src.path) else { return }
+        guard fm.fileExists(atPath: src.path) else { return true }
         let dst = Store.local.appendingPathComponent("sync-backups/\(stamp)/\(rel)")
-        try? fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? fm.copyItem(at: src, to: dst)
+        do {
+            try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.copyItem(at: src, to: dst)
+            return true
+        } catch { log.append("no backup of \(rel), kept it: \(error.localizedDescription)"); return false }
     }
 
     /// pull: cloud -> local where the cloud file is newer or the local one is missing. push: local -> cloud likewise.
@@ -152,7 +156,7 @@ enum Sync {
                 if pull && !materialize(s) { continue }
                 guard fm.fileExists(atPath: s.path), let sm = mtime(s) else { continue }
                 if let dm = mtime(d), !(sm > dm.addingTimeInterval(2)) { kept += 1; continue }     // 2 s: file systems round times differently
-                if pull { backupLocal(rel, stamp: stamp) }
+                if pull && !backupLocal(rel, stamp: stamp) { continue }
                 if copy(s, d) { moved += 1 }
             }
         }

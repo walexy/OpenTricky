@@ -75,7 +75,20 @@ ln -sf "$BIN" "$LINK"
 #   OT_FPS=120           frame rate limit: 60 (default) | 120 | 144 | 240 | a number | 0 (no limit) | monitor (your display's rate)
 #   OT_VSYNC=vsync       vsync | adaptive | off (default: vsync at 60; present at once above 60)
 #   OT_FULLSCREEN=1      start in full screen (F11 or Alt+Enter toggles; F12 saves a screenshot to ~/Pictures/OpenTricky)
-if [ -f "$SUPPORT/display.env" ]; then set -a; eval "$(tr -d '\r' < "$SUPPORT/display.env")"; set +a; fi     # CR-tolerant (a file saved with Windows line endings)
+# Read as data, never run: the file can arrive from iCloud Drive, so only KEY=value lines with an OT_ / XBOX_ name are taken.
+# CR-tolerant (a file saved with Windows line endings); values may be 'single quoted' (the settings window does that) or "double quoted".
+load_env() {
+    local line k v m sq="'\\''" q="'"
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*((OT|XBOX)_[A-Za-z0-9_]+)[[:space:]]*=(.*)$ ]] || continue
+        k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[3]}"; v="${v#"${v%%[![:space:]]*}"}"      # value without leading blanks
+        if [[ "$v" =~ ^\'(.*)\'$ ]]; then m="${BASH_REMATCH[1]}"; v="${m//"$sq"/$q}"
+        elif [[ "$v" =~ ^\"(.*)\"$ ]]; then v="${BASH_REMATCH[1]}"; fi
+        export "$k=$v"
+    done < "$1"
+}
+[ -f "$SUPPORT/display.env" ] && load_env "$SUPPORT/display.env"
 
 export OT_ASSET_DIR="$HERE/../Resources/assets"      # the button pictures and the HD index (resources.txt lists them)
 cd "$SUPPORT" || exit 1
