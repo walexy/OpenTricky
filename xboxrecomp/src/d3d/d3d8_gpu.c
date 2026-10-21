@@ -697,7 +697,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
 }
 
 /* HDR / wide-gamut output (d3d8_gpu_out.c): set by the window when it got an HDR swapchain (OT_HDR=on). Strengths from
- * OT_HDR_GAMUT (default 1), OT_HDR_WARM (0.1), OT_HDR_BOOST (0.35); OT_HDR_PEAK caps the headroom used (default 4). The
+ * OT_HDR_GAMUT (default 1), OT_HDR_WARM (0.1), OT_HDR_BOOST (0.35); OT_HDR_PEAK caps the headroom used (default 1.5: colourful highlights may go to at most 1.5x SDR white, however much room the display reports). The
  * display's headroom is read from the window each frame: it changes with the display's brightness. */
 static int g_hdr;
 void d3d8_gpu_set_hdr(int on) { g_hdr = on; }
@@ -719,7 +719,7 @@ static void hdr_params(GpuOutParams *p)
 {
     static float gamut = -1, warm, boost, peak;
     float hr = 1.0f;
-    if (gamut < 0) { gamut = envf("OT_HDR_GAMUT", 1.0f); warm = envf("OT_HDR_WARM", 0.1f); boost = envf("OT_HDR_BOOST", 0.35f); peak = envf("OT_HDR_PEAK", 4.0f); }
+    if (gamut < 0) { gamut = envf("OT_HDR_GAMUT", 1.0f); warm = envf("OT_HDR_WARM", 0.1f); boost = envf("OT_HDR_BOOST", 0.35f); peak = envf("OT_HDR_PEAK", 1.5f); }
     if (g_win) hr = SDL_GetFloatProperty(SDL_GetWindowProperties(g_win), SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
     if (hr < 1.0f) hr = 1.0f;
     if (hr > peak) hr = peak;

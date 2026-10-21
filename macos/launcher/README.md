@@ -22,7 +22,7 @@ Change it with a file `~/Library/Application Support/OpenTricky/display.env` (re
     OT_FULLSCREEN=1      # start in full screen
     OT_BUTTONS=playstation   # button pictures in menus and HUD: modern | playstation | ps2 (default: the game's own Xbox glyphs)
     OT_HD_TEXTURES=/path/to/pack   # your HD texture pack folder (DDS files, not included); OT_HD_MENUS=1: menus too
-    OT_HDR=on            # HDR / wide-gamut output (see below); tune with OT_HDR_GAMUT (0..1), OT_HDR_WARM (0..0.5, default 0.1), OT_HDR_BOOST (0..1, default 0.35)
+    OT_HDR=on            # HDR / wide-gamut output (see below); tune with OT_HDR_GAMUT (0..1), OT_HDR_WARM (0..0.5, default 0.1), OT_HDR_BOOST (0..1, default 0.35), OT_HDR_PEAK (headroom used, default 1.5)
     OT_HDR_SCENE=0.45    # share of the HDR gamut expansion the 3D picture gets (1 = like the HUD and menus)
     OT_SMAA=high         # smoother edges (SMAA) on the 3D: off (default) | low | medium | high | ultra; HUD and menus stay sharp
     OT_SOFT_SHADOWS=on   # soft shadow edges (default off)

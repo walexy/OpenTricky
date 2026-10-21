@@ -170,7 +170,7 @@ int main(void)
         SDL_UnmapGPUTransferBuffer(dev, rup);
         all.x = 0; all.y = 0; all.w = R * FAM; all.h = 1;
         for (mode = 0; mode < 2; mode++) {   /* 0: plain linear light, 1: the defaults of the game (see d3d8_gpu.c hdr_params) */
-            p.gamut = mode ? 1.0f : 0.0f; p.warm = mode ? 0.1f : 0.0f; p.boost = mode ? 0.35f : 0.0f; p.headroom = 1.2f;
+            p.gamut = mode ? 1.0f : 0.0f; p.warm = mode ? 0.1f : 0.0f; p.boost = mode ? 0.35f : 0.0f; p.headroom = 1.5f;   /* the game caps the headroom it uses at OT_HDR_PEAK (1.5) */
             cmd = SDL_AcquireGPUCommandBuffer(dev);
             if (mode == 0) {
                 cp = SDL_BeginGPUCopyPass(cmd);
