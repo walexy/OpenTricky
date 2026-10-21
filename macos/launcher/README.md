@@ -20,6 +20,7 @@ Change it with a file `~/Library/Application Support/OpenTricky/display.env` (re
     OT_SHAPE=21:9        # auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number such as 2.39
     OT_RENDER_H=1440     # rows the GPU draws (480 or more; the width follows the shape)
     OT_FULLSCREEN=1      # start in full screen
+    OT_HDR=on            # HDR / wide-gamut output (see below); tune with OT_HDR_GAMUT (0..1), OT_HDR_WARM (0..0.5), OT_HDR_BOOST (0..1)
     OT_SMAA=high         # smoother edges (SMAA) on the 3D: off (default) | low | medium | high | ultra; HUD and menus stay sharp
     OT_SOFT_SHADOWS=on   # soft shadow edges (default off)
     OT_FPS=120           # frame rate limit: 60 (default) | 120 | 144 | 240 | a number | 0 = no limit | monitor
@@ -29,3 +30,5 @@ In the game window: **F11** or **Alt+Enter** toggles full screen, **F12** saves 
 The shape is fixed at start (the game is told its screen shape then), so changing `OT_SHAPE` needs a restart. Menus keep the game's own 16:9 frame on wider screens; movies keep 4:3.
 
 Frame rates above 60: the game keeps its logic at 60 Hz and draws extra frames in between, interpolating the camera and riders (port/src/fps_cap.c). Set `OT_FPS`; extra frames are only visible if your display refreshes faster than 60 Hz (on a 60 Hz display the frames are produced and presented but cannot all be shown; `OT_VSYNC=vsync` then caps the rate to the display). Tearing is possible with `off` or above 60 in full screen.
+
+HDR and wide gamut (`OT_HDR=on`): the game's picture is SDR, made for a TV. On a wide-gamut HDR display the app asks for an HDR (extended linear) window and runs a colour pass (`xboxrecomp/src/d3d/d3d8_gpu_out.c`) that reads the colours as Display P3 instead of sRGB (saturated oranges, yellows and reds reach what the panel can show; greys and white stay put), adds a little more chroma to oranges and yellows (`OT_HDR_WARM`), and lifts bright, saturated highlights (fire, lamps, the game's gold) towards the display's HDR headroom, which macOS reports per window and changes with the display's brightness (1.2 on the development machine, so the lift is small there). Without an HDR display the option is ignored. `macos/hdr_test/hdr_test.c` checks the colour maths on known colours.

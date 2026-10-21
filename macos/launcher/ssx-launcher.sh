@@ -55,6 +55,8 @@ ln -sf "$BIN" "$LINK"
 # optional display settings: ~/Library/Application Support/OpenTricky/display.env, lines like
 #   OT_SHAPE=21:9        auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number
 #   OT_RENDER_H=1440     height of the picture the GPU draws (default 1080 wide, 960 at 4:3)
+#   OT_HDR=on            HDR / wide-gamut output on an HDR display: saturated colours (oranges, yellows) reach what the panel can show
+#                        (tune: OT_HDR_GAMUT=0..1 default 1, OT_HDR_WARM=0..0.5 default 0.2, OT_HDR_BOOST=0..1 default 1)
 #   OT_SMAA=high         smoother edges on the 3D picture (HUD and menus stay sharp): off (default) | low | medium | high | ultra
 #   OT_SOFT_SHADOWS=on   soft shadow edges (default: off)
 #   OT_FPS=120           frame rate limit: 60 (default) | 120 | 144 | 240 | a number | 0 (no limit) | monitor (your display's rate)

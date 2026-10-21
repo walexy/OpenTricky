@@ -321,7 +321,22 @@ int ot_window_run(int (*guest)(void *), void *arg)
             SDL_Quit();
             return guest(arg);
         }
-        SDL_SetGPUSwapchainParameters(gd, win, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, choose_present_mode(gd, win));
+        {   /* OT_HDR=on: HDR output (extended linear, 1.0 = SDR white) where the display allows it; the colour pass of
+             * d3d8_gpu_out.c then gives the picture a wider gamut and lets colourful highlights use the display's headroom */
+            extern void d3d8_gpu_set_hdr(int on);
+            const char *hd = getenv("OT_HDR");
+            SDL_GPUSwapchainComposition comp = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+            if (hd && (!strcmp(hd, "on") || !strcmp(hd, "1"))) {
+                if (SDL_WindowSupportsGPUSwapchainComposition(gd, win, SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR)) comp = SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR;
+                else fprintf(stderr, "[WINDOW] HDR output is not available on this display: SDR\n");
+            }
+            SDL_SetGPUSwapchainParameters(gd, win, comp, choose_present_mode(gd, win));
+            if (comp == SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR) {
+                d3d8_gpu_set_hdr(1);
+                fprintf(stderr, "[WINDOW] HDR output (extended linear), window headroom %.2f\n",
+                        SDL_GetFloatProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f));
+            }
+        }
         d3d8_gpu_attach(gd, win);
         fprintf(stderr, "[WINDOW] GPU renderer on %s\n", SDL_GetGPUDeviceDriver(gd));
         ren = NULL;

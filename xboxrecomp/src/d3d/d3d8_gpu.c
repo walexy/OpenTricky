@@ -22,6 +22,7 @@
 #include "d3d8_nv2a_vsh.h"
 #include "d3d8_gpu_smaa.h"
 #include "d3d8_gpu_shadow.h"
+#include "d3d8_gpu_out.h"
 #include <dxgiformat.h>
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -681,11 +682,42 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
     g_rt_cleared = 1;
 }
 
+/* HDR / wide-gamut output (d3d8_gpu_out.c): set by the window when it got an HDR swapchain (OT_HDR=on). Strengths from
+ * OT_HDR_GAMUT (default 1), OT_HDR_WARM (0.2), OT_HDR_BOOST (1); OT_HDR_PEAK caps the headroom used (default 4). The
+ * display's headroom is read from the window each frame: it changes with the display's brightness. */
+static int g_hdr;
+void d3d8_gpu_set_hdr(int on) { g_hdr = on; }
+static float envf(const char *name, float dflt)
+{
+    const char *e = getenv(name);
+    return (e && e[0]) ? (float)atof(e) : dflt;
+}
+static void hdr_params(GpuOutParams *p)
+{
+    static float gamut = -1, warm, boost, peak;
+    float hr = 1.0f;
+    if (gamut < 0) { gamut = envf("OT_HDR_GAMUT", 1.0f); warm = envf("OT_HDR_WARM", 0.2f); boost = envf("OT_HDR_BOOST", 1.0f); peak = envf("OT_HDR_PEAK", 4.0f); }
+    if (g_win) hr = SDL_GetFloatProperty(SDL_GetWindowProperties(g_win), SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
+    if (hr < 1.0f) hr = 1.0f;
+    if (hr > peak) hr = peak;
+    p->gamut = gamut; p->warm = warm; p->boost = boost; p->headroom = hr;
+}
+
 static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int src_w, int src_h, double shape)
 {
     SDL_GPUTexture *sc = NULL; Uint32 w = 0, h = 0;
     SDL_GPUBlitInfo bi;
     { uint64_t a0 = SDL_GetTicksNS(); int ok = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, g_win, &sc, &w, &h); g_t_acquire += SDL_GetTicksNS() - a0; if (!ok || !sc || !w || !h) return; }
+    if (g_hdr) {   /* through the colour pass into the float swapchain */
+        SDL_Rect dr; GpuOutParams hp;
+        double ar = shape > 0.5 ? shape : 4.0 / 3.0, wa = (double)w / (double)h; Uint32 dw = w, dh = h;
+        if (wa > ar) dw = (Uint32)((double)h * ar + 0.5); else dh = (Uint32)((double)w / ar + 0.5);
+        dr.x = (int)((w - dw) / 2); dr.y = (int)((h - dh) / 2); dr.w = (int)dw; dr.h = (int)dh;
+        hdr_params(&hp);
+        if (gpu_out_draw(g_dev, cmd, src, sc, SDL_GetGPUSwapchainTextureFormat(g_dev, g_win), &dr, &hp)) return;
+        g_hdr = 0;      /* the pass failed: back to the plain blit */
+    }
+    (void)src_w; (void)src_h;
     memset(&bi, 0, sizeof bi);
     bi.source.texture = src; bi.source.w = (Uint32)src_w; bi.source.h = (Uint32)src_h;
     bi.destination.texture = sc;

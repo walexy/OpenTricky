@@ -1,0 +1,149 @@
+/* d3d8_gpu_out.c -- final pass with a colour transform (HDR / wide gamut). See d3d8_gpu_out.h.
+ *
+ * The title's picture is SDR, in sRGB-like gamma, drawn for a TV; a wide-gamut HDR display can show more than that
+ * (this one: about DCI-P3). With HDR output (SDL's HDR_EXTENDED_LINEAR swapchain: linear sRGB primaries, 1.0 = SDR white,
+ * values above 1 are brighter than white, negative values are colours outside sRGB) the pass:
+ *   1. decodes the picture (sRGB transfer) to linear light;
+ *   2. gamut: reads the colours as Display P3 -- the matrix P3 -> sRGB, which turns a saturated sRGB orange into the
+ *      more saturated orange the panel can reach (greys stay grey: the matrix keeps white); `gamut` mixes between the two;
+ *   3. warm: scales the chroma (distance from the luma) of oranges and yellows by up to `warm` more, weighted by hue; the
+ *      result is then held inside Display P3 (what the panel can show), so it never asks for more than there is;
+ *   4. boost: colourful highlights (bright and saturated: fire, sun, lamps, the game's gold) are lifted towards the
+ *      display's headroom; neutral colours, so the white of the HUD and menus, are not touched.
+ * Nothing here clips: the swapchain is float. Without an HDR display the module is not used (the SDR blit is). */
+#include "d3d8_gpu_out.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const char k_msl[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct U { float4 p; };   /* gamut, warm, boost, headroom */\n"
+    "constexpr sampler Lin(filter::linear, address::clamp_to_edge);\n"
+    "struct VO { float4 pos [[position]]; float2 uv; };\n"
+    "vertex VO out_vs(uint id [[vertex_id]]) {\n"
+    "    VO o; o.uv = float2((id << 1) & 2, id & 2);\n"
+    "    o.pos = float4(o.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0); return o;\n"
+    "}\n"
+    "static float3 srgb_to_linear(float3 c) {\n"
+    "    float3 lo = c / 12.92, hi = pow((c + 0.055) / 1.055, float3(2.4));\n"
+    "    return select(hi, lo, c <= 0.04045);\n"
+    "}\n"
+    /* Display P3 -> sRGB primaries, D65, linear */
+    "constant float3x3 P3_TO_SRGB = float3x3(\n"
+    "    float3( 1.2249401, -0.0420569, -0.0196376),\n"
+    "    float3(-0.2249404,  1.0420571, -0.0786361),\n"
+    "    float3( 0.0000000,  0.0000000,  1.0982735));\n"
+    "constant float3x3 SRGB_TO_P3 = float3x3(\n"
+    "    float3(0.8224621, 0.0331941, 0.0170827),\n"
+    "    float3(0.1775380, 0.9668058, 0.0723974),\n"
+    "    float3(0.0000000, 0.0000000, 0.9105199));\n"
+    "static float hue_weight(float3 c) {   /* 1 at orange-yellow (about 45 degrees), 0 outside 10..80 */\n"
+    "    float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b)), d = mx - mn;\n"
+    "    if (d < 1e-4 || mx < 1e-3) return 0.0;\n"
+    "    float h;\n"
+    "    if (mx == c.r) h = fmod((c.g - c.b) / d + 6.0, 6.0);\n"
+    "    else if (mx == c.g) h = (c.b - c.r) / d + 2.0;\n"
+    "    else h = (c.r - c.g) / d + 4.0;\n"
+    "    h *= 60.0;\n"
+    "    return clamp(1.0 - abs(h - 45.0) / 35.0, 0.0, 1.0) * clamp(d / max(mx, 1e-4) * 2.0, 0.0, 1.0);\n"
+    "}\n"
+    "fragment float4 out_ps(VO i [[stage_in]], constant U &u [[buffer(0)]], texture2d<float> src [[texture(0)]]) {\n"
+    "    float4 s = src.sample(Lin, i.uv);\n"
+    "    float3 lin = srgb_to_linear(s.rgb);\n"
+    "    float3 c = mix(lin, P3_TO_SRGB * lin, u.p.x);\n"
+    "    float y = dot(c, float3(0.2126, 0.7152, 0.0722));\n"
+    "    c = float3(y) + (c - float3(y)) * (1.0 + u.p.y * hue_weight(lin));\n"
+    "    c = P3_TO_SRGB * max(SRGB_TO_P3 * c, float3(0.0));\n"        /* never beyond what a P3 panel can show */
+    "    float mx = max(c.r, max(c.g, c.b)), mn = max(min(c.r, min(c.g, c.b)), 0.0);\n"
+    "    float sat = (mx - mn) / max(mx, 1e-4);\n"
+    "    float lift = smoothstep(0.5, 1.0, mx) * sat;\n"
+    "    c *= 1.0 + max(u.p.w - 1.0, 0.0) * u.p.z * lift;\n"
+    "    float hr = max(u.p.w, 1.0), top = max(c.r, max(c.g, c.b));\n"
+    "    if (top > hr) c *= hr / top;\n"                  /* no channel above what the display can reach: scale, keeping the colour */
+    "    return float4(c, 1.0);\n"
+    "}\n";
+
+char *gpu_out_source(void)
+{
+    char *s = (char *)malloc(sizeof k_msl);
+    if (s) memcpy(s, k_msl, sizeof k_msl);
+    return s;
+}
+
+static struct {
+    int failed;
+    SDL_GPUShader *vs, *ps;
+    SDL_GPUSampler *smp;
+    SDL_GPUGraphicsPipeline *pipe[2];
+    SDL_GPUTextureFormat fmt[2];
+    int n;
+} S;
+
+static SDL_GPUGraphicsPipeline *pipe_for(SDL_GPUDevice *dev, SDL_GPUTextureFormat fmt)
+{
+    int i;
+    for (i = 0; i < S.n; i++) if (S.fmt[i] == fmt) return S.pipe[i];
+    if (S.n >= 2) return NULL;
+    {
+        SDL_GPUGraphicsPipelineCreateInfo pi; SDL_GPUColorTargetDescription ct;
+        memset(&pi, 0, sizeof pi); memset(&ct, 0, sizeof ct);
+        pi.vertex_shader = S.vs; pi.fragment_shader = S.ps;
+        pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        ct.format = fmt;
+        ct.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G | SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+        ct.blend_state.enable_color_write_mask = true;
+        pi.target_info.color_target_descriptions = &ct; pi.target_info.num_color_targets = 1;
+        S.pipe[S.n] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+        if (!S.pipe[S.n]) { fprintf(stderr, "[GPU] colour pass pipeline failed: %s\n", SDL_GetError()); return NULL; }
+        S.fmt[S.n] = fmt;
+        return S.pipe[S.n++];
+    }
+}
+
+int gpu_out_draw(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, SDL_GPUTexture *dst,
+                 SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, const GpuOutParams *p)
+{
+    SDL_GPUColorTargetInfo ct;
+    SDL_GPUTextureSamplerBinding b;
+    SDL_GPURenderPass *rp;
+    SDL_GPUViewport vp;
+    SDL_GPUGraphicsPipeline *pl;
+    float u[4];
+    if (S.failed || !dev || !src || !dst) return 0;
+    if (!S.vs) {
+        char *code = gpu_out_source();
+        SDL_GPUShaderCreateInfo ci;
+        SDL_GPUSamplerCreateInfo si;
+        if (!code) { S.failed = 1; return 0; }
+        memset(&ci, 0, sizeof ci);
+        ci.code = (const Uint8 *)code; ci.code_size = sizeof k_msl; ci.format = SDL_GPU_SHADERFORMAT_MSL;
+        ci.entrypoint = "out_vs"; ci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        S.vs = SDL_CreateGPUShader(dev, &ci);
+        ci.entrypoint = "out_ps"; ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT; ci.num_samplers = 1; ci.num_uniform_buffers = 1;
+        S.ps = SDL_CreateGPUShader(dev, &ci);
+        free(code);
+        memset(&si, 0, sizeof si);
+        si.min_filter = si.mag_filter = SDL_GPU_FILTER_LINEAR;
+        si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        S.smp = SDL_CreateGPUSampler(dev, &si);
+        if (!S.vs || !S.ps || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
+    }
+    pl = pipe_for(dev, dst_fmt);
+    if (!pl) { S.failed = 1; return 0; }
+    memset(&ct, 0, sizeof ct);
+    ct.texture = dst; ct.load_op = SDL_GPU_LOADOP_CLEAR; ct.store_op = SDL_GPU_STOREOP_STORE;
+    rp = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+    SDL_BindGPUGraphicsPipeline(rp, pl);
+    vp.x = (float)dest->x; vp.y = (float)dest->y; vp.w = (float)dest->w; vp.h = (float)dest->h; vp.min_depth = 0.0f; vp.max_depth = 1.0f;
+    SDL_SetGPUViewport(rp, &vp);
+    u[0] = p->gamut; u[1] = p->warm; u[2] = p->boost; u[3] = p->headroom;
+    SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
+    b.texture = src; b.sampler = S.smp;
+    SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
+    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(rp);
+    return 1;
+}
