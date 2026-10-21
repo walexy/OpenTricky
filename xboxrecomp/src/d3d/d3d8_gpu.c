@@ -131,7 +131,7 @@ typedef struct {
 } PKey;
 
 typedef struct { PKey k; SDL_GPUGraphicsPipeline *p; } PCache;
-static PCache g_pc[512];
+static PCache g_pc[2048];
 static int g_npc;
 
 static SDL_GPUBlendFactor blend_f(DWORD b, int alpha)
@@ -235,6 +235,12 @@ static SDL_GPUGraphicsPipeline *pipeline_for(const PKey *k)
     p = SDL_CreateGPUGraphicsPipeline(g_dev, &pi);
     if (!p) fprintf(stderr, "[GPU] pipeline failed: %s\n", SDL_GetError());
     if (g_npc < (int)(sizeof g_pc / sizeof g_pc[0])) { g_pc[g_npc].k = *k; g_pc[g_npc].p = p; g_npc++; }
+    else {   /* full: not cached, so not kept (it would leak one pipeline per draw) -- the draw is skipped */
+        static int told;
+        if (p) SDL_ReleaseGPUGraphicsPipeline(g_dev, p);
+        if (!told) { told = 1; fprintf(stderr, "[GPU] pipeline cache full (%d): further new states are not drawn\n", g_npc); }
+        return NULL;
+    }
     return p;
 }
 
@@ -611,6 +617,14 @@ static void present_now(const uint8_t *movie_rgba, unsigned mw, unsigned mh)
     cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (!cmd) { reset_frame(); return; }
 
+    if (movie_rgba && (mw != TITLE_W || mh != TITLE_H)) {
+        static int told;
+        if (!told) { told = 1; fprintf(stderr, "[GPU] movie frame is %ux%u, not %dx%d: not shown\n", mw, mh, TITLE_W, TITLE_H); }
+        movie_rgba = NULL; mw = mh = 0;
+        reset_frame();
+        SDL_SubmitGPUCommandBuffer(cmd);
+        return;
+    }
     if (movie_rgba && mw && mh) {
         SDL_GPUTransferBufferCreateInfo ti; SDL_GPUTransferBuffer *tb; void *map;
         SDL_GPUCopyPass *cp; SDL_GPUTextureTransferInfo src; SDL_GPUTextureRegion dst;

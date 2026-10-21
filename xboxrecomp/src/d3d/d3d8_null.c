@@ -253,7 +253,7 @@ int  d3d8_pump_alt_off(void)                       { return 0; }
 
 /* occlusion: reports are completed at GET_REPORT, so nothing is ever outstanding */
 void  d3d8_OcclusionFlush(void) {}
-int   d3d8_OcclusionPoll(int h, unsigned long long *samples) { (void)h; if (samples) *samples = 0; return 1; }
+int   d3d8_OcclusionPoll(int h, unsigned long long *samples) { (void)h; if (samples) *samples = report_value(); return 1; }
 float d3d8_OcclusionScale(void) { return 1.0f; }
 
 #if !defined(OT_GPU)   /* a GPU build has a real device (d3d8_gpu.c) */
