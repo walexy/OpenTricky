@@ -54,9 +54,10 @@ ln -sf "$BIN" "$LINK"
 
 cd "$SUPPORT" || exit 1
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
-"$LINK" --direct "$ISO" 2> "$LOG"
+"$LINK" --direct "$ISO" > "$LOG" 2>&1
 rc=$?
-if [ $rc -ne 0 ] && [ $rc -ne 143 ]; then
+# 0 = window closed; 130, 137, 143 = interrupted, force-quit, terminated by the user or the system: not a crash
+if [ $rc -ne 0 ] && [ $rc -ne 130 ] && [ $rc -ne 137 ] && [ $rc -ne 143 ]; then
     say "The game ended unexpectedly (exit code $rc).
 
 Its output is in:
