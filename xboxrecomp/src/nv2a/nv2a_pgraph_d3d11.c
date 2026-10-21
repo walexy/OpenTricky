@@ -3492,6 +3492,7 @@ static void draw_program(const uint32_t *indices, uint32_t start, uint32_t count
             ps.alphakill[st] = (uint8_t)((g_pg.tex[st].control0 >> 2) & 1);
             pc.tex_size[st][0] = (float)(1u << TEXFMT_SIZE_U(f));
             pc.tex_size[st][1] = (float)(1u << TEXFMT_SIZE_V(f));
+            pc.tex_size[st][2] = ps.tex_rect[st] ? 1.0f : 0.0f;   /* .z: texel-unit coordinates (read by the macOS GPU backend; the HLSL uses .xy only) */
             if (ps.tex_rect[st] && g_pg.tex[st].image_rect) {
                 /* Linear images: IMAGE_RECT width 31:16, height 15:0. */
                 pc.tex_size[st][0] = (float)(g_pg.tex[st].image_rect >> 16);

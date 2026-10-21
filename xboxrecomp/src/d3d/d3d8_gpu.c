@@ -7,7 +7,8 @@
  * Slice 1 (this file today): clears and untextured geometry. A draw is the title's vertex program already run on
  * the CPU (ProgVertex: screen x, y, z, 1/w, two colours, fog, four texture coordinates) or a pre-transformed
  * fixed-function vertex (converted to the same layout); the pixel shader outputs the vertex colour. Textures are
- * created and filled (the translator does that) but not yet sampled; combiner shaders are Slice 3.
+ * created and filled (the translator does that); Slice 2 samples stage 0 (modulated with the vertex colour); combiner
+ * shaders are Slice 3.
  *
  * Frames are RECORDED while the translator runs on the pump thread -- state in a table, vertices in an arena, one op
  * per draw or clear -- and EXECUTED at present: upload the arena, replay the ops into a 640x480 colour + depth target
@@ -17,6 +18,7 @@
 #include "d3d8_xbox.h"
 #include "../nv2a/nv2a_pgraph_d3d11.h"
 #include "../nv2a/nv2a_hdtex.h"
+#include "../nv2a/nv2a_psh.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +38,7 @@ static SDL_GPUTexture *g_rt, *g_ds, *g_movie;
 static SDL_GPUTextureFormat g_rt_fmt = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
 static SDL_GPUTextureFormat g_ds_fmt = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
 static SDL_GPUShader *g_vs, *g_fs;
+typedef struct Tex Tex;
 static int g_failed;
 static int g_rt_cleared;      /* has the target been cleared at least once (first frame starts black) */
 
@@ -70,9 +73,13 @@ static const char g_msl[] =
     "  o.d0 = i.d0; o.d1 = i.d1; o.fog = i.fog; o.t0 = i.t0; o.t1 = i.t1; o.t2 = i.t2; o.t3 = i.t3;\n"
     "  return o;\n"
     "}\n"
-    "struct FSU { float4 atest; };   /* x: D3DCMP function (0 = test off), y: reference 0..1 */\n"
-    "fragment float4 fs_color(VSOut i [[stage_in]], constant FSU &u [[buffer(0)]]) {\n"
+    /* atest.x: D3DCMP function (0 = test off), y: reference 0..1; tx.x: 1 = modulate with stage 0, tx.yz: 1 / texel
+     * size for rect (texel-unit) coordinates, 1 otherwise */
+    "struct FSU { float4 atest; float4 tx; };\n"
+    "fragment float4 fs_color(VSOut i [[stage_in]], constant FSU &u [[buffer(0)]],\n"
+    "                        texture2d<float> tex0 [[texture(0)]], sampler smp0 [[sampler(0)]]) {\n"
     "  float4 c = i.d0;\n"
+    "  if (u.tx.x > 0.5) c *= tex0.sample(smp0, i.t0.xy * u.tx.yz);\n"
     "  int f = int(u.atest.x); float r = u.atest.y; bool pass = true;\n"
     "  if (f == 1) pass = false; else if (f == 2) pass = c.a < r; else if (f == 3) pass = c.a == r;\n"
     "  else if (f == 4) pass = c.a <= r; else if (f == 5) pass = c.a > r; else if (f == 6) pass = c.a != r;\n"
@@ -81,14 +88,14 @@ static const char g_msl[] =
     "  return c;\n"
     "}\n";
 
-static SDL_GPUShader *make_shader(SDL_GPUShaderStage stage, const char *entry, Uint32 uniforms)
+static SDL_GPUShader *make_shader(SDL_GPUShaderStage stage, const char *entry, Uint32 uniforms, Uint32 samplers)
 {
     SDL_GPUShaderCreateInfo ci;
     SDL_GPUShader *s;
     memset(&ci, 0, sizeof ci);
     ci.code = (const Uint8 *)g_msl; ci.code_size = sizeof g_msl;
     ci.entrypoint = entry; ci.format = SDL_GPU_SHADERFORMAT_MSL; ci.stage = stage;
-    ci.num_uniform_buffers = uniforms;
+    ci.num_uniform_buffers = uniforms; ci.num_samplers = samplers;
     s = SDL_CreateGPUShader(g_dev, &ci);
     if (!s) fprintf(stderr, "[GPU] shader %s failed: %s\n", entry, SDL_GetError());
     return s;
@@ -111,6 +118,11 @@ static void  state_defaults(void)
     g_rs[D3DRS_STENCILFUNC] = D3DCMP_ALWAYS; g_rs[D3DRS_STENCILMASK] = 0xFFFFFFFFu; g_rs[D3DRS_STENCILWRITEMASK] = 0xFFFFFFFFu;
     g_rs[D3DRS_STENCILFAIL] = g_rs[D3DRS_STENCILZFAIL] = g_rs[D3DRS_STENCILPASS] = 1;
     g_rs[D3DRS_ALPHAFUNC] = D3DCMP_ALWAYS; g_rs[D3DRS_FILLMODE] = 3;
+    {   int st; memset(g_tss, 0, sizeof g_tss);
+        for (st = 0; st < 4; st++) {
+            g_tss[st][D3DTSS_ADDRESSU] = g_tss[st][D3DTSS_ADDRESSV] = 1;
+            g_tss[st][D3DTSS_MAGFILTER] = g_tss[st][D3DTSS_MINFILTER] = 2;
+        } }
 }
 
 void d3d8_SetWindowClip(int on, long x0, long y0, long x1, long y1)
@@ -275,6 +287,7 @@ static void key_from_state(PKey *k, int prim, int raster, int use_raster)
 /* recording                                                          */
 /* ================================================================= */
 
+typedef struct { uint8_t min, mag, mip, au, av, maxmip, aniso, pad; float bias; } SKey;
 enum { OP_DRAW = 1, OP_CLEAR = 2 };
 typedef struct {
     int type;
@@ -282,6 +295,9 @@ typedef struct {
     uint32_t first, count;                 /* vertices in the arena */
     int scissor_on; long sc[4];
     float atest[4];
+    float tx[4];
+    Tex *tex;                              /* stage 0 texture (a reference is held until the frame is presented) */
+    SKey skey;
     uint32_t stencil_ref;
     /* clear */
     DWORD flags; float color[4]; float z; DWORD stencil; unsigned x0, y0, x1, y1;
@@ -337,7 +353,9 @@ static void fill_alpha_test(Op *o)
     o->atest[1] = (float)(g_rs[D3DRS_ALPHAREF] & 0xFF) / 255.0f;
 }
 
-static void record_draw(int prim, uint32_t nverts, const void *v, uint32_t stride, int ffp, int raster, int use_raster)
+static void capture_tex(Op *o, const Nv2aPshConsts *pc);
+static void record_draw(int prim, uint32_t nverts, const void *v, uint32_t stride, int ffp, int raster, int use_raster,
+                        const Nv2aPshConsts *pc)
 {
     Op *o; uint32_t first;
     if (!nverts || !g_ops) return;
@@ -350,6 +368,7 @@ static void record_draw(int prim, uint32_t nverts, const void *v, uint32_t strid
     o->first = first; o->count = nverts;
     o->scissor_on = g_wclip_on; memcpy(o->sc, g_wclip, sizeof o->sc);
     fill_alpha_test(o);
+    capture_tex(o, pc);
     o->stencil_ref = g_rs[D3DRS_STENCILREF] & 0xFF;
 }
 
@@ -368,8 +387,9 @@ static uint32_t prim_verts(int prim, uint32_t pc)
 HRESULT d3d8_nv2a_draw(D3DPRIMITIVETYPE prim, UINT prim_count, const void *verts, UINT stride,
                        unsigned long long ps_key, const void *ps_consts, UINT ps_consts_size, int raster)
 {
-    (void)ps_key; (void)ps_consts; (void)ps_consts_size;
-    record_draw((int)prim, prim_verts((int)prim, prim_count), verts, stride, 0, raster, 1);
+    (void)ps_key;
+    record_draw((int)prim, prim_verts((int)prim, prim_count), verts, stride, 0, raster, 1,
+                ps_consts_size >= sizeof(Nv2aPshConsts) ? (const Nv2aPshConsts *)ps_consts : NULL);
     return 0;
 }
 
@@ -428,8 +448,8 @@ static int ensure_targets(void)
 static int ensure_shaders(void)
 {
     if (g_vs && g_fs) return 1;
-    g_vs = make_shader(SDL_GPU_SHADERSTAGE_VERTEX, "vs_main", 1);
-    g_fs = make_shader(SDL_GPU_SHADERSTAGE_FRAGMENT, "fs_color", 1);
+    g_vs = make_shader(SDL_GPU_SHADERSTAGE_VERTEX, "vs_main", 1, 0);
+    g_fs = make_shader(SDL_GPU_SHADERSTAGE_FRAGMENT, "fs_color", 1, 1);
     return g_vs && g_fs;
 }
 
@@ -473,6 +493,10 @@ static void upload_arena(SDL_GPUCommandBuffer *cmd)
     SDL_EndGPUCopyPass(cp);
 }
 
+static void frame_release_textures(void);
+static void upload_textures(SDL_GPUCommandBuffer *cmd);
+static int  bind_stage0(SDL_GPURenderPass *pass, const Op *o);
+
 static void replay_ops(SDL_GPUCommandBuffer *cmd)
 {
     SDL_GPURenderPass *pass = NULL;
@@ -492,11 +516,11 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             pass = begin_pass(cmd, cc && full, o->color, cz, o->z, cs, (Uint8)o->stencil);
             if (cc && !full && o->count) {
                 PKey k; SDL_GPUGraphicsPipeline *p; SDL_GPUBufferBinding bb; SDL_Rect all = { 0, 0, TITLE_W, TITLE_H };
-                float screen[4] = { TITLE_W, TITLE_H, 0, 0 }, fs[4] = { 0, 0, 0, 0 };
+                float screen[4] = { TITLE_W, TITLE_H, 0, 0 }, fs[8] = { 0, 0, 0, 0, 0, 1, 1, 0 };
                 memset(&k, 0, sizeof k); k.cwrite = 0xF; k.src = D3DBLEND_ONE; k.dst = D3DBLEND_ZERO; k.op = 1;
                 k.z_func = D3DCMP_ALWAYS; k.st_func = D3DCMP_ALWAYS; k.prim = D3DPT_TRIANGLELIST;
                 p = pipeline_for(&k);
-                if (p && g_vbuf) {
+                if (p && g_vbuf && bind_stage0(pass, o)) {
                     SDL_BindGPUGraphicsPipeline(pass, p);
                     SDL_SetGPUScissor(pass, &all);
                     SDL_PushGPUVertexUniformData(cmd, 0, screen, sizeof screen);
@@ -513,7 +537,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             SDL_GPUGraphicsPipeline *p = pipeline_for(&o->key);
             SDL_GPUBufferBinding bb;
             float screen[4] = { TITLE_W, TITLE_H, 0, 0 };
-            if (!p || !g_vbuf) continue;
+            if (!p || !g_vbuf || !bind_stage0(pass, o)) continue;
             SDL_BindGPUGraphicsPipeline(pass, p);
             if (o->scissor_on) {
                 SDL_Rect r; r.x = (int)o->sc[0]; r.y = (int)o->sc[1]; r.w = (int)(o->sc[2] - o->sc[0] + 1); r.h = (int)(o->sc[3] - o->sc[1] + 1);
@@ -525,7 +549,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             }
             SDL_SetGPUStencilReference(pass, (Uint8)o->stencil_ref);
             SDL_PushGPUVertexUniformData(cmd, 0, screen, sizeof screen);
-            SDL_PushGPUFragmentUniformData(cmd, 0, o->atest, sizeof o->atest);
+            SDL_PushGPUFragmentUniformData(cmd, 0, o->atest, 2 * sizeof o->atest);   /* atest + tx */
             bb.buffer = g_vbuf; bb.offset = o->first * 116u;
             SDL_BindGPUVertexBuffers(pass, 0, &bb, 1);
             SDL_DrawGPUPrimitives(pass, o->count, 1, 0, 0);
@@ -556,7 +580,7 @@ static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int s
     SDL_BlitGPUTexture(cmd, &bi);
 }
 
-static void reset_frame(void) { g_nops = 0; g_arena_used = 0; }
+static void reset_frame(void) { frame_release_textures(); g_nops = 0; g_arena_used = 0; }
 
 /* OT_GPU_SHOT=<prefix> OT_GPU_SHOT_AT=300,900,...: after those scene presents, the 640x480 target is read back
  * and written as <prefix>_<n>.ppm. The way to look at the 3D without a screen capture. */
@@ -651,6 +675,7 @@ static void present_now(const uint8_t *movie_rgba, unsigned mw, unsigned mh)
     } else {
         static unsigned scene_presents;
         upload_arena(cmd);
+        upload_textures(cmd);
         replay_ops(cmd);
         blit_to_window(cmd, g_rt, TITLE_W, TITLE_H);
         scene_presents++;
@@ -806,11 +831,14 @@ static HRESULT __stdcall u125(void) { return unimpl(125); }
 static HRESULT __stdcall u126(void) { return unimpl(126); }
 static HRESULT __stdcall u127(void) { return unimpl(127); }
 
-typedef struct {
+struct Tex {
     const IDirect3DTexture8Vtbl *lpVtbl;
     UINT w, h, levels; D3DFORMAT fmt; LONG ref;
     uint8_t *data[16]; UINT pitch[16]; UINT size[16];
-} Tex;
+    SDL_GPUTexture *gpu;                   /* created and filled at present */
+    int dirty;                             /* the levels changed since the last upload */
+    uint32_t stamp;                        /* frame that last listed this texture in g_ftex */
+};
 
 static ULONG __stdcall tex_addref(IDirect3DTexture8 *s) { return (ULONG)++((Tex *)s)->ref; }
 static ULONG __stdcall tex_release(IDirect3DTexture8 *s)
@@ -818,6 +846,7 @@ static ULONG __stdcall tex_release(IDirect3DTexture8 *s)
     Tex *t = (Tex *)s; UINT i;
     if (--t->ref > 0) return (ULONG)t->ref;
     for (i = 0; i < 16; i++) free(t->data[i]);
+    if (t->gpu && g_dev) SDL_ReleaseGPUTexture(g_dev, t->gpu);
     free(t);
     return 0;
 }
@@ -829,7 +858,7 @@ static HRESULT __stdcall tex_lock(IDirect3DTexture8 *s, UINT lvl, D3DLOCKED_RECT
     lr->pBits = t->data[lvl]; lr->Pitch = (INT)t->pitch[lvl];
     return 0;
 }
-static HRESULT __stdcall tex_unlock(IDirect3DTexture8 *s, UINT lvl) { (void)s; (void)lvl; return 0; }
+static HRESULT __stdcall tex_unlock(IDirect3DTexture8 *s, UINT lvl) { (void)lvl; ((Tex *)s)->dirty = 1; return 0; }
 static HRESULT __stdcall tex_leveldesc(IDirect3DTexture8 *s, UINT lvl, D3DSURFACE_DESC *d)
 {
     Tex *t = (Tex *)s;
@@ -849,7 +878,7 @@ static HRESULT __stdcall dev_createtexture(IDirect3DDevice8 *self, UINT w, UINT 
     if (levels > 16) levels = 16;
     t = (Tex *)calloc(1, sizeof *t);
     if (!t) return (HRESULT)0x8007000E;
-    t->lpVtbl = &g_texvt; t->w = w; t->h = h; t->levels = levels; t->fmt = fmt; t->ref = 1;
+    t->dirty = 1; t->lpVtbl = &g_texvt; t->w = w; t->h = h; t->levels = levels; t->fmt = fmt; t->ref = 1;
     for (i = 0; i < levels; i++) {
         lw = w >> i; if (!lw) lw = 1;
         lh = h >> i; if (!lh) lh = 1;
@@ -864,6 +893,148 @@ static HRESULT __stdcall dev_createtexture(IDirect3DDevice8 *self, UINT w, UINT 
 }
 
 static IDirect3DBaseTexture8 *g_bound[4];
+
+/* ---- textures: CPU levels -> SDL_GPUTexture at present, sampled as stage 0 (Slice 2) ---------------------------- */
+
+#define MAX_FTEX 8192
+static Tex *g_ftex[MAX_FTEX];               /* textures the frame's ops refer to (each op holds a reference) */
+static uint32_t g_nftex, g_frame_id = 1;
+static SDL_GPUTexture *g_white;             /* 1x1 white: bound when a draw has no texture */
+
+static void capture_tex(Op *o, const Nv2aPshConsts *pc)
+{
+    Tex *t = (Tex *)g_bound[0];
+    o->tx[1] = o->tx[2] = 1.0f;
+    if (!t) return;
+    if (t->stamp != g_frame_id) {
+        if (g_nftex >= MAX_FTEX) return;
+        g_ftex[g_nftex++] = t; t->stamp = g_frame_id;
+    }
+    t->ref++;
+    o->tex = t; o->tx[0] = 1.0f;
+    if (pc && pc->tex_size[0][2] > 0.5f) {       /* linear image: the vertex gives texel units */
+        float w = pc->tex_size[0][0] > 0 ? pc->tex_size[0][0] : (float)t->w, h = pc->tex_size[0][1] > 0 ? pc->tex_size[0][1] : (float)t->h;
+        o->tx[1] = 1.0f / w; o->tx[2] = 1.0f / h;
+    }
+    {
+        const DWORD *ts = g_tss[0]; float bias;
+        memcpy(&bias, &ts[D3DTSS_MIPMAPLODBIAS], 4);
+        o->skey.min = (uint8_t)ts[D3DTSS_MINFILTER]; o->skey.mag = (uint8_t)ts[D3DTSS_MAGFILTER]; o->skey.mip = (uint8_t)ts[D3DTSS_MIPFILTER];
+        o->skey.au = (uint8_t)ts[D3DTSS_ADDRESSU]; o->skey.av = (uint8_t)ts[D3DTSS_ADDRESSV];
+        o->skey.maxmip = (uint8_t)(ts[D3DTSS_MAXMIPLEVEL] > 15 ? 15 : ts[D3DTSS_MAXMIPLEVEL]);
+        o->skey.aniso = (uint8_t)(ts[D3DTSS_MAXANISOTROPY] > 16 ? 16 : ts[D3DTSS_MAXANISOTROPY]);
+        o->skey.bias = (bias == bias && bias > -16.0f && bias < 16.0f) ? bias : 0.0f;     /* NaN / absurd -> 0 */
+    }
+}
+
+static void frame_release_textures(void)
+{
+    uint32_t i;
+    for (i = 0; i < g_nops; i++) if (g_ops[i].tex) { tex_release((IDirect3DTexture8 *)g_ops[i].tex); g_ops[i].tex = NULL; }
+    g_nftex = 0; g_frame_id++;
+}
+
+static SDL_GPUSampler *sampler_for(const SKey *k)
+{
+    static struct { SKey k; SDL_GPUSampler *s; } c[256];
+    static int n, told;
+    SDL_GPUSamplerCreateInfo si; SDL_GPUSampler *s; int i;
+    for (i = 0; i < n; i++) if (!memcmp(&c[i].k, k, sizeof *k)) return c[i].s;
+    if (n >= 256) { if (!told) { told = 1; fprintf(stderr, "[GPU] sampler cache full: using the first sampler\n"); } return c[0].s; }
+    memset(&si, 0, sizeof si);
+    si.min_filter = k->min >= 2 ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
+    si.mag_filter = k->mag >= 2 ? SDL_GPU_FILTER_LINEAR : SDL_GPU_FILTER_NEAREST;
+    si.mipmap_mode = k->mip >= 2 ? SDL_GPU_SAMPLERMIPMAPMODE_LINEAR : SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    si.address_mode_u = k->au == 1 ? SDL_GPU_SAMPLERADDRESSMODE_REPEAT : k->au == 2 ? SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT : SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_v = k->av == 1 ? SDL_GPU_SAMPLERADDRESSMODE_REPEAT : k->av == 2 ? SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT : SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_w = si.address_mode_u;
+    si.mip_lod_bias = k->bias; si.min_lod = (float)k->maxmip; si.max_lod = k->mip ? 1000.0f : (float)k->maxmip;
+    if (k->aniso > 1 && k->min >= 2) { si.enable_anisotropy = true; si.max_anisotropy = (float)k->aniso; }
+    s = SDL_CreateGPUSampler(g_dev, &si);
+    if (!s) fprintf(stderr, "[GPU] sampler failed: %s\n", SDL_GetError());
+    c[n].k = *k; c[n].s = s; n++;
+    return s;
+}
+
+static SDL_GPUTextureFormat tex_gpu_fmt(D3DFORMAT f)
+{
+    return f == D3DFMT_DXT1 ? SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM : f == D3DFMT_DXT3 ? SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM :
+           f == D3DFMT_DXT5 ? SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM : SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+}
+
+static void upload_textures(SDL_GPUCommandBuffer *cmd)
+{
+    SDL_GPUCopyPass *cp = NULL; uint32_t i;
+    if (!g_white) {
+        SDL_GPUTextureCreateInfo ti; SDL_GPUTransferBufferCreateInfo bi; SDL_GPUTransferBuffer *tb; void *map;
+        memset(&ti, 0, sizeof ti);
+        ti.type = SDL_GPU_TEXTURETYPE_2D; ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; ti.width = ti.height = 1;
+        ti.layer_count_or_depth = 1; ti.num_levels = 1; ti.sample_count = SDL_GPU_SAMPLECOUNT_1; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        g_white = SDL_CreateGPUTexture(g_dev, &ti);
+        memset(&bi, 0, sizeof bi); bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD; bi.size = 4;
+        tb = g_white ? SDL_CreateGPUTransferBuffer(g_dev, &bi) : NULL;
+        map = tb ? SDL_MapGPUTransferBuffer(g_dev, tb, false) : NULL;
+        if (map) {
+            SDL_GPUTextureTransferInfo src; SDL_GPUTextureRegion dst;
+            memset(map, 0xFF, 4); SDL_UnmapGPUTransferBuffer(g_dev, tb);
+            cp = SDL_BeginGPUCopyPass(cmd);
+            memset(&src, 0, sizeof src); memset(&dst, 0, sizeof dst);
+            src.transfer_buffer = tb; src.pixels_per_row = 1; src.rows_per_layer = 1;
+            dst.texture = g_white; dst.w = dst.h = dst.d = 1;
+            SDL_UploadToGPUTexture(cp, &src, &dst, false);
+        }
+        if (tb) SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+    }
+    for (i = 0; i < g_nftex; i++) {
+        Tex *t = g_ftex[i];
+        SDL_GPUTransferBufferCreateInfo bi; SDL_GPUTransferBuffer *tb; uint8_t *map; UINT l; uint32_t total = 0, off = 0;
+        if (t->gpu && !t->dirty) continue;
+        if (!t->gpu) {
+            SDL_GPUTextureCreateInfo ti; SDL_GPUTextureFormat f = tex_gpu_fmt(t->fmt);
+            static int told;
+            if (!SDL_GPUTextureSupportsFormat(g_dev, f, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
+                if (!told) { told = 1; fprintf(stderr, "[GPU] texture format %d (xbox %d) not supported by the device: drawn untextured\n", (int)f, (int)t->fmt); }
+                t->dirty = 0; continue;
+            }
+            memset(&ti, 0, sizeof ti);
+            ti.type = SDL_GPU_TEXTURETYPE_2D; ti.format = f; ti.width = t->w; ti.height = t->h;
+            ti.layer_count_or_depth = 1; ti.num_levels = t->levels; ti.sample_count = SDL_GPU_SAMPLECOUNT_1; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            t->gpu = SDL_CreateGPUTexture(g_dev, &ti);
+            if (!t->gpu) { fprintf(stderr, "[GPU] texture %ux%u fmt %d failed: %s\n", t->w, t->h, (int)t->fmt, SDL_GetError()); t->dirty = 0; continue; }
+        }
+        for (l = 0; l < t->levels; l++) total += t->size[l];
+        memset(&bi, 0, sizeof bi); bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD; bi.size = total;
+        tb = SDL_CreateGPUTransferBuffer(g_dev, &bi);
+        map = tb ? (uint8_t *)SDL_MapGPUTransferBuffer(g_dev, tb, false) : NULL;
+        if (!map) { if (tb) SDL_ReleaseGPUTransferBuffer(g_dev, tb); continue; }
+        for (l = 0; l < t->levels; l++) { memcpy(map + off, t->data[l], t->size[l]); off += t->size[l]; }
+        SDL_UnmapGPUTransferBuffer(g_dev, tb);
+        if (!cp) cp = SDL_BeginGPUCopyPass(cmd);
+        for (off = 0, l = 0; l < t->levels; l++) {
+            SDL_GPUTextureTransferInfo src; SDL_GPUTextureRegion dst;
+            UINT lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+            memset(&src, 0, sizeof src); memset(&dst, 0, sizeof dst);
+            src.transfer_buffer = tb; src.offset = off; src.pixels_per_row = lw; src.rows_per_layer = lh;
+            dst.texture = t->gpu; dst.mip_level = l; dst.w = lw; dst.h = lh; dst.d = 1;
+            SDL_UploadToGPUTexture(cp, &src, &dst, false);
+            off += t->size[l];
+        }
+        SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+        t->dirty = 0;
+    }
+    if (cp) SDL_EndGPUCopyPass(cp);
+}
+
+static int bind_stage0(SDL_GPURenderPass *pass, const Op *o)
+{
+    SDL_GPUTextureSamplerBinding b;
+    b.texture = (o->tex && o->tex->gpu) ? o->tex->gpu : g_white;
+    b.sampler = sampler_for(&o->skey);
+    if (!b.texture || !b.sampler) return 0;
+    SDL_BindGPUFragmentSamplers(pass, 0, &b, 1);
+    return 1;
+}
+
 static HRESULT __stdcall dev_settexture(IDirect3DDevice8 *s, DWORD st, IDirect3DBaseTexture8 *t) { (void)s; if (st < 4) g_bound[st] = t; return 0; }
 static HRESULT __stdcall dev_gettexture(IDirect3DDevice8 *s, DWORD st, IDirect3DBaseTexture8 **t) { (void)s; if (t) *t = st < 4 ? g_bound[st] : NULL; return 0; }
 static HRESULT __stdcall dev_setrs(IDirect3DDevice8 *s, D3DRENDERSTATETYPE st, DWORD v) { (void)s; if ((unsigned)st < 512) g_rs[st] = v; return 0; }
@@ -877,7 +1048,7 @@ static HRESULT __stdcall dev_drawup(IDirect3DDevice8 *s, D3DPRIMITIVETYPE prim, 
 {
     (void)s;
     /* fixed-function pre-transformed vertices (XYZRHW | DIFFUSE | TEX1): x y z rhw, colour, u v */
-    record_draw((int)prim, prim_verts((int)prim, pc), v, stride, 1, 0, 0);
+    record_draw((int)prim, prim_verts((int)prim, pc), v, stride, 1, 0, 0, NULL);
     return 0;
 }
 static HRESULT __stdcall dev_clear(IDirect3DDevice8 *s, DWORD n, const D3DRECT *r, DWORD fl, D3DCOLOR c, float z, DWORD st)
