@@ -278,7 +278,9 @@ void d3d8_host_target_size(unsigned *w, unsigned *h)
     *w = rw & ~1u; *h = rh & ~1u;
 }
 void d3d8_SetAnisotropy(int n)                     { (void)n; }
+#if !defined(OT_GPU)      /* the GPU backend (d3d8_gpu.c) runs the post chain at FRAME_END */
 void d3d8_PassPhaseChanged(int o, int n, unsigned tag) { (void)o; (void)n; (void)tag; }
+#endif
 /* the window (port/src/ot_window.c) installs these when it owns a window */
 void (*d3d8_host_fullscreen_hook)(int on);
 int  (*d3d8_host_isfullscreen_hook)(void);
@@ -289,7 +291,9 @@ HWND d3d8_GetHostWindow(void)                      { return NULL; }
 int  (*d3d8_monitor_hz_hook)(void);              /* the window (port/src/ot_window.c) reports its display's refresh rate */
 int  d3d8_monitor_hz(HWND hwnd)                    { (void)hwnd; int hz = d3d8_monitor_hz_hook ? d3d8_monitor_hz_hook() : 60; return hz > 0 ? hz : 60; }
 void d3d8_sync_set_pace(int fps)                   { (void)fps; }
+#if !defined(OT_GPU)
 int  d3d8_post_split_wanted(void)                  { return 0; }
+#endif
 void gpuprof_init(void)                            {}
 int  d3d8_pump_alt_off(void)                       { return 0; }
 

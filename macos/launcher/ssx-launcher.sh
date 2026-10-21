@@ -55,6 +55,8 @@ ln -sf "$BIN" "$LINK"
 # optional display settings: ~/Library/Application Support/OpenTricky/display.env, lines like
 #   OT_SHAPE=21:9        auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number
 #   OT_RENDER_H=1440     height of the picture the GPU draws (default 1080 wide, 960 at 4:3)
+#   OT_SMAA=high         smoother edges on the 3D picture (HUD and menus stay sharp): off (default) | low | medium | high | ultra
+#   OT_SOFT_SHADOWS=on   soft shadow edges (default: off)
 #   OT_FPS=120           frame rate limit: 60 (default) | 120 | 144 | 240 | a number | 0 (no limit) | monitor (your display's rate)
 #   OT_VSYNC=vsync       vsync | adaptive | off (default: vsync at 60; present at once above 60)
 #   OT_FULLSCREEN=1      start in full screen (F11 or Alt+Enter toggles; F12 saves a screenshot to ~/Pictures/OpenTricky)

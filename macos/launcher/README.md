@@ -20,6 +20,8 @@ Change it with a file `~/Library/Application Support/OpenTricky/display.env` (re
     OT_SHAPE=21:9        # auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number such as 2.39
     OT_RENDER_H=1440     # rows the GPU draws (480 or more; the width follows the shape)
     OT_FULLSCREEN=1      # start in full screen
+    OT_SMAA=high         # smoother edges (SMAA) on the 3D: off (default) | low | medium | high | ultra; HUD and menus stay sharp
+    OT_SOFT_SHADOWS=on   # soft shadow edges (default off)
     OT_FPS=120           # frame rate limit: 60 (default) | 120 | 144 | 240 | a number | 0 = no limit | monitor
     OT_VSYNC=vsync       # vsync | adaptive | off (default: vsync at 60, present at once above 60)
 

@@ -136,6 +136,18 @@ static SDL_GPUPresentMode choose_present_mode(SDL_GPUDevice *gd, SDL_Window *win
     int above60;
     const char *sync;
     if (fps && fps[0] && !getenv("XBOX_FPS_CAP")) setenv("XBOX_FPS_CAP", fps, 1);
+    {   /* OT_SOFT_SHADOWS=on -> XBOX_SOFT_SHADOWS=1 */
+        const char *ss = getenv("OT_SOFT_SHADOWS");
+        if (ss && (!strcmp(ss, "on") || !strcmp(ss, "1")) && !getenv("XBOX_SOFT_SHADOWS")) setenv("XBOX_SOFT_SHADOWS", "1", 1);
+    }
+    {   /* OT_SMAA=low|medium|high|ultra (anything else: off) -> the Windows layer's XBOX_SMAA / XBOX_SMAA_PRESET */
+        const char *sm = getenv("OT_SMAA");
+        if (sm && sm[0] && !getenv("XBOX_SMAA") &&
+            (!strcmp(sm, "low") || !strcmp(sm, "medium") || !strcmp(sm, "high") || !strcmp(sm, "ultra"))) {
+            setenv("XBOX_SMAA", "1", 1);
+            setenv("XBOX_SMAA_PRESET", sm, 1);
+        }
+    }
     if (vs && vs[0] && !getenv("XBOX_SYNC")) setenv("XBOX_SYNC", vs, 1);
     if (m && m->refresh_rate > 1.0f) s_display_hz = (int)(m->refresh_rate + 0.5f);
     d3d8_monitor_hz_hook = hook_monitor_hz;

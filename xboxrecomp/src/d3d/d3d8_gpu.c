@@ -20,6 +20,8 @@
 #include "../nv2a/nv2a_hdtex.h"
 #include "../nv2a/nv2a_psh.h"
 #include "d3d8_nv2a_vsh.h"
+#include "d3d8_gpu_smaa.h"
+#include "d3d8_gpu_shadow.h"
 #include <dxgiformat.h>
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -38,6 +40,7 @@ extern void d3d8_host_target_size(unsigned *w, unsigned *h);
 extern int d3d8_PresentBoxOn(void);
 extern double d3d8_PresentBoxShape(void);
 static uint64_t g_t_encode, g_t_acquire, g_t_submit;   /* where the backend's time goes (reported every 300 presents) */
+static unsigned g_scene_presents, g_ss_count;      /* soft shadow runs recorded */                  /* scene presents so far */
 static unsigned g_tw = TITLE_W, g_th = TITLE_H;     /* the scene target's size (d3d8_host_target_size) */
 static SDL_GPUDevice *g_dev;
 static SDL_Window    *g_win;
@@ -307,7 +310,7 @@ static void key_from_state(PKey *k, int prim, int raster, int use_raster)
 /* ================================================================= */
 
 typedef struct { uint8_t min, mag, mip, au, av, maxmip, aniso, pad; float bias; } SKey;
-enum { OP_DRAW = 1, OP_CLEAR = 2 };
+enum { OP_DRAW = 1, OP_CLEAR = 2, OP_FRAME_END = 3, OP_SOFTSHADOW = 4 };
 typedef struct {
     int type;
     PKey key;
@@ -474,7 +477,7 @@ static int ensure_targets(void)
     ti.layer_count_or_depth = 1; ti.num_levels = 1; ti.sample_count = SDL_GPU_SAMPLECOUNT_1;
     ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
     g_rt = SDL_CreateGPUTexture(g_dev, &ti);
-    ti.format = g_ds_fmt; ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    ti.format = g_ds_fmt; ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;   /* sampled by the soft shadows */
     g_ds = SDL_CreateGPUTexture(g_dev, &ti);
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER; ti.width = TITLE_W; ti.height = TITLE_H;
     g_movie = SDL_CreateGPUTexture(g_dev, &ti);
@@ -560,6 +563,8 @@ static void upbuf_put(SDL_GPUCommandBuffer *cmd, UpBuf *u, SDL_GPUBufferUsageFla
     SDL_EndGPUCopyPass(cp);
 }
 
+static int smaa_preset(void);
+
 static void replay_ops(SDL_GPUCommandBuffer *cmd)
 {
     SDL_GPURenderPass *pass = NULL;
@@ -570,6 +575,28 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
 
     for (i = 0; i < g_nops; i++) {
         Op *o = &g_ops[i];
+        if (o->type == OP_SOFTSHADOW) {
+            if (!pass && first_pass) { pass = begin_pass(cmd, 1, black, 1, 1.0f, 1, 0); first_pass = 0; }
+            if (pass) { SDL_EndGPURenderPass(pass); pass = NULL; }
+            gpu_shadow_run(g_dev, cmd, g_rt, g_rt_fmt, g_ds, g_ds_fmt, g_tw, g_th, o->color[0], o->flags, o->stencil, o->count,
+                           (int)o->x0, (int)o->y0, (int)o->x1, (int)o->y1);
+            continue;
+        }
+        if (o->type == OP_FRAME_END) {
+            SDL_GPUTexture *r;
+            if (!pass && first_pass) { pass = begin_pass(cmd, 1, black, 1, 1.0f, 1, 0); first_pass = 0; }
+            if (pass) { SDL_EndGPURenderPass(pass); pass = NULL; }
+            r = gpu_smaa_run(g_dev, cmd, g_rt, g_tw, g_th, g_rt_fmt, smaa_preset());
+            if (r) {   /* the result goes back into the scene target; the overlay is drawn over it */
+                SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureLocation sl, dl;
+                memset(&sl, 0, sizeof sl); memset(&dl, 0, sizeof dl);
+                sl.texture = r; dl.texture = g_rt;
+                SDL_CopyGPUTextureToTexture(cp, &sl, &dl, g_tw, g_th, 1, false);
+                SDL_EndGPUCopyPass(cp);
+            }
+            continue;
+        }
         if (o->type == OP_CLEAR) {
             int cc = (o->flags & 1) != 0, cz = (o->flags & 2) != 0, cs = (o->flags & 4) != 0;
             int full = o->x0 == 0 && o->y0 == 0 && o->x1 >= TITLE_W - 1 && o->y1 >= TITLE_H - 1;
@@ -812,7 +839,7 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
         }
         if (tb) SDL_ReleaseGPUTransferBuffer(g_dev, tb);
     } else {
-        static unsigned scene_presents;
+        static unsigned scene_presents;   /* (also read, as g_scene_presents, by the soft shadow test switch) */
         { uint64_t e0 = SDL_GetTicksNS(); upload_arena(cmd);
           upbuf_put(cmd, &g_rbuf, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, g_raw, g_raw_used);
           upbuf_put(cmd, &g_ibuf, SDL_GPU_BUFFERUSAGE_INDEX, g_idxa, g_idx_used * 4u);
@@ -822,7 +849,7 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
             double a = d3d8_HostAspect(), box = d3d8_PresentBoxShape();
             blit_to_window(cmd, g_rt, (int)g_tw, (int)g_th, d3d8_PresentBoxOn() && a > box + 0.005 ? box : a);
         }
-        scene_presents++;
+        scene_presents++; g_scene_presents = scene_presents;
         if (g_shot_req) {
             g_shot_req = 0;
             if (capture_save(cmd, g_rt, g_tw, g_th, 0, g_shot_req_path, 1)) fprintf(stderr, "[GPU] screenshot saved: %s\n", g_shot_req_path);
@@ -843,6 +870,7 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
                             (double)(n - pn) / 300e6, (double)(vs - pvs) / 300e6, (double)(c - pc) / 300.0, (double)(v - pv) / 300.0);
             pn = n; pc = c; pv = v; pvs = vs;
         }
+        { static unsigned ssp; if (g_ss_count != ssp) { fprintf(stderr, "[GPU]   soft shadow runs: %.2f per present\n", (double)(g_ss_count - ssp) / 300.0); ssp = g_ss_count; } }
         g_t_encode = g_t_acquire = g_t_submit = 0;
         t0 = now; busy_prev = g_busy_ns;
     }
@@ -852,6 +880,34 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
 /* called by d3d8_PresentFrame (d3d8_null.c): rgba = the movie frame, NULL = the 3D scene */
 void (*d3d8_present_hook)(const uint8_t *rgba, unsigned w, unsigned h);
 static void present_hook(const uint8_t *rgba, unsigned w, unsigned h) { present_now(rgba, w, h); }
+
+/* ================================================================= */
+/* post: SMAA on the 3D of each image (split at FRAME_END)             */
+/* ================================================================= */
+
+/* XBOX_SMAA=1 with XBOX_SMAA_PRESET=low|medium|high|ultra (default high), as in the Windows layer (OT_SMAA is the short form,
+ * set by the window). The translator calls d3d8_PassPhaseChanged when a pass marker changes the phase; FRAME_END (5) is the
+ * end of the 3D of the image: SMAA runs there, on the 3D alone, and the HUD and menus drawn afterwards stay sharp. */
+static int smaa_preset(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("XBOX_SMAA"), *p = getenv("XBOX_SMAA_PRESET");
+        v = 0;
+        if (e && e[0] == '1') {
+            v = 3;
+            if (p) v = !strcmp(p, "low") ? 1 : !strcmp(p, "medium") ? 2 : !strcmp(p, "ultra") ? 4 : 3;
+        }
+    }
+    return v;
+}
+int  d3d8_post_split_wanted(void) { return smaa_preset() > 0; }
+void d3d8_PassPhaseChanged(int old_phase, int new_phase, unsigned tag)
+{
+    (void)old_phase; (void)tag;
+    if (new_phase != 5 /* PGRAPH_PHASE_END */ || smaa_preset() <= 0) return;
+    op_new(OP_FRAME_END);
+}
 
 /* ================================================================= */
 /* the IDirect3DDevice8 the translator draws through                  */
@@ -1339,10 +1395,41 @@ void   d3d8_GetGuestScale(float *sx, float *sy)    /* scene-target pixels per ti
 void   d3d8_PlagShot(void) {}
 unsigned d3d8_DebugPeekScene(float fx, float fy) { (void)fx; (void)fy; return 0; }
 IDirect3DTexture8 *d3d8_PrevFrameTexture(void) { return NULL; }
-int  d3d8_SoftShadowOn(void) { return 0; }
+/* XBOX_SOFT_SHADOWS=1 (OT_SOFT_SHADOWS=on sets it): the translator calls d3d8_SoftShadowDraw just before the title's shadow quad;
+ * the passes (d3d8_gpu_shadow.c) run in the replay at this point of the frame, and the quad then only zeroes the stencil. */
+int  d3d8_SoftShadowOn(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("XBOX_SOFT_SHADOWS"); on = e && e[0] == '1'; }
+    return on;
+}
 int d3d8_SoftShadowDraw(float shade, unsigned cmp, unsigned ref, unsigned rmask,
                         float fx0, float fy0, float fx1, float fy1)
-{ (void)shade; (void)cmp; (void)ref; (void)rmask; (void)fx0; (void)fy0; (void)fx1; (void)fy1; return 0; }
+{
+    unsigned tw, th;
+    long l, t, r, b;
+    Op *o;
+    if (!d3d8_SoftShadowOn() || !g_ops) return 0;
+    {   /* XBOX_SOFT_SHADOWS_ALT=1 (test): soft on even presents only, so that two consecutive captures compare hard and soft */
+        static int alt = -1;
+        if (alt < 0) { const char *e = getenv("XBOX_SOFT_SHADOWS_ALT"); alt = e && e[0] == '1'; }
+        if (alt && ((g_scene_presents + 1) & 1u)) return 0;
+    }
+    d3d8_host_target_size(&tw, &th);
+    l = (long)(fx0 * (float)tw); t = (long)(fy0 * (float)th);
+    r = (long)(fx1 * (float)tw + 0.999f); b = (long)(fy1 * (float)th + 0.999f);
+    if (l < 0) l = 0;
+    if (t < 0) t = 0;
+    if (r > (long)tw) r = (long)tw;
+    if (b > (long)th) b = (long)th;
+    if (r <= l || b <= t) return 0;
+    o = op_new(OP_SOFTSHADOW);
+    if (!o) return 0;
+    g_ss_count++;
+    o->color[0] = shade; o->flags = cmp; o->stencil = ref; o->count = rmask;
+    o->x0 = (unsigned)l; o->y0 = (unsigned)t; o->x1 = (unsigned)r; o->y1 = (unsigned)b;
+    return 1;
+}
 int  d3d8_pump_cache_on(void) { return 0; }
 
 /* pixel shaders: Slice 3. The translator generates the combiner source; the default colour shader stands in for all of it. */
