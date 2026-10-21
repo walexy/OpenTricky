@@ -185,7 +185,13 @@ static SDL_GPUGraphicsPipeline *pipeline_for(const PKey *k)
     SDL_GPUGraphicsPipeline *p;
     int i;
     for (i = 0; i < g_npc; i++) if (!memcmp(&g_pc[i].k, k, sizeof *k)) return g_pc[i].p;
+    {   /* OT_GPU_PIPELINE_CACHE_MAX=<n> (test): a smaller cache, to exercise the full path */
+        static int cap = -1;
+        if (cap < 0) { const char *e = getenv("OT_GPU_PIPELINE_CACHE_MAX"); cap = e ? atoi(e) : 0; }
+        if (cap > 0 && cap < (int)(sizeof g_pc / sizeof g_pc[0]) && g_npc >= cap) goto cache_full;
+    }
     if (g_npc >= (int)(sizeof g_pc / sizeof g_pc[0])) {   /* full: no compile, no leak -- the draw is skipped */
+cache_full:
         static int told;
         if (!told) { told = 1; fprintf(stderr, "[GPU] pipeline cache full (%d): draws with a new state are skipped\n", g_npc); }
         return NULL;
@@ -616,6 +622,7 @@ static void present_now(const uint8_t *movie_rgba, unsigned mw, unsigned mh)
     cmd = SDL_AcquireGPUCommandBuffer(g_dev);
     if (!cmd) { reset_frame(); return; }
 
+    if (movie_rgba && getenv("OT_GPU_TEST_BADMOVIE")) { mw = 320; mh = 240; }   /* test: exercise the wrong-size path */
     if (movie_rgba && (mw != TITLE_W || mh != TITLE_H)) {
         static int told;
         if (!told) { told = 1; fprintf(stderr, "[GPU] movie frame is %ux%u, not %dx%d: not shown\n", mw, mh, TITLE_W, TITLE_H); }
