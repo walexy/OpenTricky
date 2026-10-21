@@ -147,6 +147,68 @@ int main(void)
             if (d > 0.012f) { bad++; printf("  FAIL: scene pass does not compose to the direct result\n"); }
         }
     }
+    {   /* highlight gradations: a ramp of shades of a saturated colour, 0.6 .. 1.0 of full, through the default settings must keep
+         * its steps apart (a hard clip at the display's headroom merged the brightest ones) */
+        enum { R = 16, FAM = 4 };
+        static const unsigned char fam[FAM][3] = { { 255, 128, 0 }, { 255, 220, 0 }, { 255, 40, 20 }, { 240, 200, 120 } };
+        SDL_GPUTexture *rs, *rd;
+        SDL_GPUTransferBuffer *rup, *rdown;
+        int f, k;
+        float py[FAM][R], base[FAM][R];
+        ti.type = SDL_GPU_TEXTURETYPE_2D; ti.width = R * FAM; ti.height = 1;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER; rs = SDL_CreateGPUTexture(dev, &ti);
+        ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT; ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER; rd = SDL_CreateGPUTexture(dev, &ti);
+        memset(&bi, 0, sizeof bi); bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD; bi.size = R * FAM * 4; rup = SDL_CreateGPUTransferBuffer(dev, &bi);
+        bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD; bi.size = R * FAM * 8; rdown = SDL_CreateGPUTransferBuffer(dev, &bi);
+        px = (unsigned char *)SDL_MapGPUTransferBuffer(dev, rup, false);
+        for (f = 0; f < FAM; f++)
+            for (k = 0; k < R; k++) {
+                float sh = 0.6f + 0.4f * (float)k / (float)(R - 1);
+                unsigned char *q = px + (f * R + k) * 4;
+                q[0] = (unsigned char)(fam[f][0] * sh + 0.5f); q[1] = (unsigned char)(fam[f][1] * sh + 0.5f); q[2] = (unsigned char)(fam[f][2] * sh + 0.5f); q[3] = 255;
+            }
+        SDL_UnmapGPUTransferBuffer(dev, rup);
+        all.x = 0; all.y = 0; all.w = R * FAM; all.h = 1;
+        for (mode = 0; mode < 2; mode++) {   /* 0: plain linear light, 1: the defaults of the game (see d3d8_gpu.c hdr_params) */
+            p.gamut = mode ? 1.0f : 0.0f; p.warm = mode ? 0.1f : 0.0f; p.boost = mode ? 0.35f : 0.0f; p.headroom = 1.2f;
+            cmd = SDL_AcquireGPUCommandBuffer(dev);
+            if (mode == 0) {
+                cp = SDL_BeginGPUCopyPass(cmd);
+                memset(&ts, 0, sizeof ts); memset(&tr, 0, sizeof tr);
+                ts.transfer_buffer = rup; ts.pixels_per_row = R * FAM; ts.rows_per_layer = 1;
+                tr.texture = rs; tr.w = R * FAM; tr.h = 1; tr.d = 1;
+                SDL_UploadToGPUTexture(cp, &ts, &tr, false);
+                SDL_EndGPUCopyPass(cp);
+            }
+            gpu_out_draw(dev, cmd, rs, rd, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, &all, &p);
+            cp = SDL_BeginGPUCopyPass(cmd);
+            memset(&ts, 0, sizeof ts); memset(&tr, 0, sizeof tr);
+            ts.transfer_buffer = rdown; ts.pixels_per_row = R * FAM; ts.rows_per_layer = 1;
+            tr.texture = rd; tr.w = R * FAM; tr.h = 1; tr.d = 1;
+            SDL_DownloadFromGPUTexture(cp, &tr, &ts);
+            SDL_EndGPUCopyPass(cp);
+            fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+            SDL_WaitForGPUFences(dev, true, &fence, 1); SDL_ReleaseGPUFence(dev, fence);
+            out = (unsigned short *)SDL_MapGPUTransferBuffer(dev, rdown, false);
+            for (f = 0; f < FAM; f++)
+                for (k = 0; k < R; k++) {
+                    int o = (f * R + k) * 4;   /* the channel that is largest in the source, as displayed: luma of the output */
+                    float y = 0.2126f * half_to_float(out[o]) + 0.7152f * half_to_float(out[o + 1]) + 0.0722f * half_to_float(out[o + 2]);
+                    float mx = fmaxf(half_to_float(out[o]), fmaxf(half_to_float(out[o + 1]), half_to_float(out[o + 2])));
+                    if (mode == 0) base[f][k] = mx; else py[f][k] = mx;
+                    (void)y;
+                }
+            SDL_UnmapGPUTransferBuffer(dev, rdown);
+        }
+        printf("highlight ramps (largest channel; plain -> defaults), steps of 1/15 of the range\n");
+        for (f = 0; f < FAM; f++) {
+            float minstep = 1e9f, basestep = 1e9f;
+            for (k = 1; k < R; k++) { minstep = fminf(minstep, py[f][k] - py[f][k - 1]); basestep = fminf(basestep, base[f][k] - base[f][k - 1]); }
+            printf("  family %d: top %.3f -> %.3f   smallest step %.4f (plain %.4f)\n", f, base[f][R - 1], py[f][R - 1], minstep, basestep);
+            if (!(minstep > 0.0f)) { bad++; printf("  FAIL: two shades merged\n"); }
+            if (minstep < 0.30f * basestep) { bad++; printf("  FAIL: highlight steps squeezed below 30%% of the plain ones\n"); }
+        }
+    }
     printf("%s\n", bad ? "FAILED" : "all checks held");
     return bad != 0;
 }

@@ -10,7 +10,8 @@
  *      result is then held inside Display P3 (what the panel can show), so it never asks for more than there is;
  *   4. boost: colourful highlights (bright and saturated: fire, sun, lamps, the game's gold) are lifted towards the
  *      display's headroom; neutral colours, so the white of the HUD and menus, are not touched.
- * Nothing here clips: the swapchain is float. Without an HDR display the module is not used (the SDR blit is). */
+ * A smooth shoulder above white keeps shades that the expansion pushed past 1.0 apart (a clip at the display's headroom merged
+ * them: blown highlights). Nothing here clips: the swapchain is float. Without an HDR display the module is not used (the SDR blit is). */
 #include "d3d8_gpu_out.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,8 +75,13 @@ static const char k_msl[] =
     "    float sat = (mx - mn) / max(mx, 1e-4);\n"
     "    float lift = smoothstep(0.5, 1.0, mx) * sat;\n"
     "    c *= 1.0 + max(u.p.w - 1.0, 0.0) * u.p.z * lift;\n"
-    "    float hr = max(u.p.w, 1.0), top = max(c.r, max(c.g, c.b));\n"
-    "    if (top > hr) c *= hr / top;\n"                  /* no channel above what the display can reach: scale, keeping the colour */
+    /* A shoulder above white instead of a clip: the largest channel is rolled off smoothly into the display's headroom (slope 1
+     * at white, then flatter, never above the headroom), so shades that the expansion pushed over 1.0 stay apart. */
+    "    float hr = max(u.p.w, 1.0), top = max(c.r, max(c.g, c.b)), room = hr - 1.0;\n"
+    "    if (top > 1.0) {\n"
+    "        float t2 = room > 1e-3 ? 1.0 + room * (1.0 - exp(-(top - 1.0) / room)) : 1.0;\n"
+    "        c *= t2 / top;\n"
+    "    }\n"
     "    return float4(c, 1.0);\n"
     "}\n";
 

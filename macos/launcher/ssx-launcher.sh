@@ -58,7 +58,7 @@ ln -sf "$BIN" "$LINK"
 #   OT_BUTTONS=playstation  button pictures in the menus and HUD: modern (Xbox Series) | playstation | ps2 (default: the game's own)
 #   OT_HD_TEXTURES=/path/to/pack   your HD texture pack folder (the DDS files; not included); OT_HD_MENUS=1 also for menus
 #   OT_HDR=on            HDR / wide-gamut output on an HDR display: saturated colours (oranges, yellows) reach what the panel can show
-#                        (tune: OT_HDR_GAMUT=0..1 default 1, OT_HDR_WARM=0..0.5 default 0.2, OT_HDR_BOOST=0..1 default 1)
+#                        (tune: OT_HDR_GAMUT=0..1 default 1, OT_HDR_WARM=0..0.5 default 0.1, OT_HDR_BOOST=0..1 default 0.35)
 #   OT_HDR_SCENE=0.45     how much of the HDR gamut expansion the 3D picture gets (the HUD and menus get all of OT_HDR_GAMUT): 1 = same as the HUD
 #   OT_SMAA=high         smoother edges on the 3D picture (HUD and menus stay sharp): off (default) | low | medium | high | ultra
 #   OT_SOFT_SHADOWS=on   soft shadow edges (default: off)
