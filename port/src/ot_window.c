@@ -323,6 +323,7 @@ static void window_step(SDL_Window *win, double f)
     window_height(win, (int)(h * f + 0.5));
 }
 /* The settings window (OT_TOOL, set by the app's launcher): Cmd+, or F2. One at a time. */
+extern void ot_menu_install(void);
 static pid_t s_settings_pid;
 static void open_settings(SDL_Window *win)
 {
@@ -367,6 +368,9 @@ int ot_window_run(int (*guest)(void *), void *arg)
         s_win_aspect = (double)ww / (double)wh;
 #endif
         win = SDL_CreateWindow("SSX Tricky (OpenTricky, macOS)", ww, wh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+#if !defined(_WIN32)
+        if (win) ot_menu_install();
+#endif
         if (win && (getenv("XBOX_FULLSCREEN") ? getenv("XBOX_FULLSCREEN")[0] == '1' : getenv("OT_FULLSCREEN") && getenv("OT_FULLSCREEN")[0] == '1'))
             SDL_SetWindowFullscreen(win, true);
     }
@@ -440,6 +444,19 @@ int ot_window_run(int (*guest)(void *), void *arg)
                 { bool on = !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN); SDL_SetWindowFullscreen(win, on); fprintf(stderr, "[WINDOW] fullscreen %s\n", on ? "on" : "off"); }
             else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F12) screenshot_request();
 #if !defined(_WIN32)
+            else if (ev.type == SDL_EVENT_USER) {      /* the menu bar (ot_menu_macos.m) */
+                switch (ev.user.code) {
+                case 1: open_settings(win); break;
+                case 2: { bool on = !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN); SDL_SetWindowFullscreen(win, on); } break;
+                case 3: screenshot_request(); break;
+                case 4: window_step(win, 0.8); break;
+                case 5: window_step(win, 1.25); break;
+                case 10: window_height(win, 540); break;
+                case 11: window_height(win, 720); break;
+                case 12: window_height(win, 900); break;
+                case 13: window_height(win, 1080); break;
+                }
+            }
             else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F9) window_step(win, 0.8);
             else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F10) window_step(win, 1.25);
             else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F2) open_settings(win);

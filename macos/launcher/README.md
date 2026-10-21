@@ -56,4 +56,5 @@ Button pictures (`OT_BUTTONS`): the game's button prompts are redrawn as an Xbox
 
 In the game: F11 / Alt+Enter full screen; Cmd+1..4 window size, F9 / F10 smaller / larger (OT_WINDOW_H sets the opening height);
 Cmd+, or F2, or the controller's Guide / PlayStation button (or Back+Start, i.e. Share+Options, together) open the settings window.
-Not done: a "Settings" entry inside the game's own menus (that needs a patch to the recompiled menu code).
+The macOS menu bar has **SSX Tricky › Settings… (Cmd+,)** and a **Game** menu (full screen, window sizes, screenshot, folder) -- port/src/ot_menu_macos.m.
+Not done: a "Settings" entry inside the game's own 3D menus (that needs a patch to the recompiled menu code; see MACOS_PORT_PLAN.md).

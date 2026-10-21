@@ -228,6 +228,14 @@ elseif(APPLE)
     option(OT_WINDOW "Open an SDL3 window (macOS)" ON)
     target_sources(${PROJECT_NAME} PRIVATE src/ot_window.c)
     if(OT_WINDOW)
+        # src/ot_menu_macos.m: the menu bar entries. Its own library: the game target force-includes the Windows compatibility header,
+        # which clashes with Cocoa's types.
+        enable_language(OBJC)
+        find_package(SDL3 CONFIG REQUIRED)
+        add_library(ot_menu STATIC src/ot_menu_macos.m)
+        set_target_properties(ot_menu PROPERTIES COMPILE_OPTIONS "")      # drop the directory-wide force-include
+        target_link_libraries(ot_menu PRIVATE SDL3::SDL3 "-framework Cocoa")
+        target_link_libraries(${PROJECT_NAME} PRIVATE ot_menu)
         find_package(SDL3 CONFIG REQUIRED)
         target_compile_definitions(${PROJECT_NAME} PRIVATE OT_HAVE_WINDOW=1)
         target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3)
