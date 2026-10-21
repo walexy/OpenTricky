@@ -49,6 +49,20 @@ static const char k_msl[] =
     "    h *= 60.0;\n"
     "    return clamp(1.0 - abs(h - 45.0) / 35.0, 0.0, 1.0) * clamp(d / max(mx, 1e-4) * 2.0, 0.0, 1.0);\n"
     "}\n"
+    "static float3 linear_to_srgb(float3 c) {\n"
+    "    c = max(c, float3(0.0));\n"
+    "    float3 lo = c * 12.92, hi = 1.055 * pow(c, float3(1.0 / 2.4)) - 0.055;\n"
+    "    return select(hi, lo, c <= 0.0031308);\n"
+    "}\n"
+    /* The 3D picture gets less of the gamut expansion than the HUD and menus: this pass runs on it (in the scene target, at
+     * FRAME_END) and moves its colours part of the way back, c' = mix(c, P3->sRGB inverse * c, u.p.x), so that the later
+     * matrix of out_ps gives mix(c, P3_TO_SRGB * c, 1 - u.p.x) exactly (in linear light; sRGB colours stay inside [0, 1]). */
+    "fragment float4 comp_ps(VO i [[stage_in]], constant U &u [[buffer(0)]], texture2d<float> src [[texture(0)]]) {\n"
+    "    float4 s = src.read(uint2(i.pos.xy));\n"
+    "    float3 lin = srgb_to_linear(s.rgb);\n"
+    "    float3 c = mix(lin, SRGB_TO_P3 * lin, u.p.x);\n"
+    "    return float4(linear_to_srgb(c), s.a);\n"
+    "}\n"
     "fragment float4 out_ps(VO i [[stage_in]], constant U &u [[buffer(0)]], texture2d<float> src [[texture(0)]]) {\n"
     "    float4 s = src.sample(Lin, i.uv);\n"
     "    float3 lin = srgb_to_linear(s.rgb);\n"
@@ -74,17 +88,17 @@ char *gpu_out_source(void)
 
 static struct {
     int failed;
-    SDL_GPUShader *vs, *ps;
+    SDL_GPUShader *vs, *ps, *ps_comp;
     SDL_GPUSampler *smp;
-    SDL_GPUGraphicsPipeline *pipe[2];
+    SDL_GPUGraphicsPipeline *pipe[2], *pipe_comp[2];
     SDL_GPUTextureFormat fmt[2];
     int n;
 } S;
 
-static SDL_GPUGraphicsPipeline *pipe_for(SDL_GPUDevice *dev, SDL_GPUTextureFormat fmt)
+static SDL_GPUGraphicsPipeline *pipe_for(SDL_GPUDevice *dev, SDL_GPUTextureFormat fmt, int comp)
 {
     int i;
-    for (i = 0; i < S.n; i++) if (S.fmt[i] == fmt) return S.pipe[i];
+    for (i = 0; i < S.n; i++) if (S.fmt[i] == fmt) return comp ? S.pipe_comp[i] : S.pipe[i];
     if (S.n >= 2) return NULL;
     {
         SDL_GPUGraphicsPipelineCreateInfo pi; SDL_GPUColorTargetDescription ct;
@@ -97,9 +111,12 @@ static SDL_GPUGraphicsPipeline *pipe_for(SDL_GPUDevice *dev, SDL_GPUTextureForma
         ct.blend_state.enable_color_write_mask = true;
         pi.target_info.color_target_descriptions = &ct; pi.target_info.num_color_targets = 1;
         S.pipe[S.n] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
-        if (!S.pipe[S.n]) { fprintf(stderr, "[GPU] colour pass pipeline failed: %s\n", SDL_GetError()); return NULL; }
+        pi.fragment_shader = S.ps_comp;
+        S.pipe_comp[S.n] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+        if (!S.pipe[S.n] || !S.pipe_comp[S.n]) { fprintf(stderr, "[GPU] colour pass pipeline failed: %s\n", SDL_GetError()); return NULL; }
         S.fmt[S.n] = fmt;
-        return S.pipe[S.n++];
+        S.n++;
+        return comp ? S.pipe_comp[S.n - 1] : S.pipe[S.n - 1];
     }
 }
 
@@ -124,14 +141,16 @@ int gpu_out_draw(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *
         S.vs = SDL_CreateGPUShader(dev, &ci);
         ci.entrypoint = "out_ps"; ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT; ci.num_samplers = 1; ci.num_uniform_buffers = 1;
         S.ps = SDL_CreateGPUShader(dev, &ci);
+        ci.entrypoint = "comp_ps";
+        S.ps_comp = SDL_CreateGPUShader(dev, &ci);
         free(code);
         memset(&si, 0, sizeof si);
         si.min_filter = si.mag_filter = SDL_GPU_FILTER_LINEAR;
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         S.smp = SDL_CreateGPUSampler(dev, &si);
-        if (!S.vs || !S.ps || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
+        if (!S.vs || !S.ps || !S.ps_comp || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
     }
-    pl = pipe_for(dev, dst_fmt);
+    pl = pipe_for(dev, dst_fmt, 0);
     if (!pl) { S.failed = 1; return 0; }
     memset(&ct, 0, sizeof ct);
     ct.texture = dst; ct.load_op = SDL_GPU_LOADOP_CLEAR; ct.store_op = SDL_GPU_STOREOP_STORE;
@@ -140,6 +159,54 @@ int gpu_out_draw(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *
     vp.x = (float)dest->x; vp.y = (float)dest->y; vp.w = (float)dest->w; vp.h = (float)dest->h; vp.min_depth = 0.0f; vp.max_depth = 1.0f;
     SDL_SetGPUViewport(rp, &vp);
     u[0] = p->gamut; u[1] = p->warm; u[2] = p->boost; u[3] = p->headroom;
+    SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
+    b.texture = src; b.sampler = S.smp;
+    SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
+    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(rp);
+    return 1;
+}
+
+/* The scene pass: src -> dst (same size, fmt), colours moved back by `amount` (0 = unchanged, 1 = out_ps's gamut matrix
+ * fully undone). Both textures must be GPU-side targets/samplers; no render pass open. */
+int gpu_out_scene_comp(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, SDL_GPUTexture *dst,
+                       SDL_GPUTextureFormat fmt, float amount)
+{
+    SDL_GPUColorTargetInfo ct;
+    SDL_GPUTextureSamplerBinding b;
+    SDL_GPURenderPass *rp;
+    SDL_GPUGraphicsPipeline *pl;
+    float u[4] = { amount, 0, 0, 0 };
+    GpuOutParams dummy = { 0, 0, 0, 1 };
+    SDL_Rect none = { 0, 0, 1, 1 };
+    if (S.failed || !dev || !src || !dst) return 0;
+    if (!S.vs) {   /* build the shaders and the sampler through a no-op first use of the module */
+        (void)dummy; (void)none;
+        {   char *code = gpu_out_source();
+            SDL_GPUShaderCreateInfo ci; SDL_GPUSamplerCreateInfo si;
+            if (!code) { S.failed = 1; return 0; }
+            memset(&ci, 0, sizeof ci);
+            ci.code = (const Uint8 *)code; ci.code_size = sizeof k_msl; ci.format = SDL_GPU_SHADERFORMAT_MSL;
+            ci.entrypoint = "out_vs"; ci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+            S.vs = SDL_CreateGPUShader(dev, &ci);
+            ci.entrypoint = "out_ps"; ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT; ci.num_samplers = 1; ci.num_uniform_buffers = 1;
+            S.ps = SDL_CreateGPUShader(dev, &ci);
+            ci.entrypoint = "comp_ps";
+            S.ps_comp = SDL_CreateGPUShader(dev, &ci);
+            free(code);
+            memset(&si, 0, sizeof si);
+            si.min_filter = si.mag_filter = SDL_GPU_FILTER_LINEAR;
+            si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+            S.smp = SDL_CreateGPUSampler(dev, &si);
+            if (!S.vs || !S.ps || !S.ps_comp || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
+        }
+    }
+    pl = pipe_for(dev, fmt, 1);
+    if (!pl) { S.failed = 1; return 0; }
+    memset(&ct, 0, sizeof ct);
+    ct.texture = dst; ct.load_op = SDL_GPU_LOADOP_DONT_CARE; ct.store_op = SDL_GPU_STOREOP_STORE;
+    rp = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+    SDL_BindGPUGraphicsPipeline(rp, pl);
     SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
     b.texture = src; b.sampler = S.smp;
     SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);

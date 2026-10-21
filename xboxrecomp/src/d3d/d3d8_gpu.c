@@ -45,7 +45,7 @@ static unsigned g_scene_presents, g_ss_count;      /* soft shadow runs recorded 
 static unsigned g_tw = TITLE_W, g_th = TITLE_H;     /* the scene target's size (d3d8_host_target_size) */
 static SDL_GPUDevice *g_dev;
 static SDL_Window    *g_win;
-static SDL_GPUTexture *g_rt, *g_ds, *g_movie;
+static SDL_GPUTexture *g_rt, *g_ds, *g_movie, *g_post_tmp;   /* g_post_tmp: scene-sized scratch for the 3D colour pass */
 static SDL_GPUTextureFormat g_rt_fmt = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
 static SDL_GPUTextureFormat g_ds_fmt = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
 static SDL_GPUShader *g_vs, *g_fs;
@@ -478,6 +478,8 @@ static int ensure_targets(void)
     ti.layer_count_or_depth = 1; ti.num_levels = 1; ti.sample_count = SDL_GPU_SAMPLECOUNT_1;
     ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
     g_rt = SDL_CreateGPUTexture(g_dev, &ti);
+    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    g_post_tmp = SDL_CreateGPUTexture(g_dev, &ti);           /* same format and size as the scene target */
     ti.format = g_ds_fmt; ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;   /* sampled by the soft shadows */
     g_ds = SDL_CreateGPUTexture(g_dev, &ti);
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER; ti.width = TITLE_W; ti.height = TITLE_H;
@@ -565,6 +567,7 @@ static void upbuf_put(SDL_GPUCommandBuffer *cmd, UpBuf *u, SDL_GPUBufferUsageFla
 }
 
 static int smaa_preset(void);
+static float scene_comp_amount(void);
 
 static void replay_ops(SDL_GPUCommandBuffer *cmd)
 {
@@ -587,12 +590,23 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             SDL_GPUTexture *r;
             if (!pass && first_pass) { pass = begin_pass(cmd, 1, black, 1, 1.0f, 1, 0); first_pass = 0; }
             if (pass) { SDL_EndGPURenderPass(pass); pass = NULL; }
-            r = gpu_smaa_run(g_dev, cmd, g_rt, g_tw, g_th, g_rt_fmt, smaa_preset());
+            r = smaa_preset() > 0 ? gpu_smaa_run(g_dev, cmd, g_rt, g_tw, g_th, g_rt_fmt, smaa_preset()) : NULL;
             if (r) {   /* the result goes back into the scene target; the overlay is drawn over it */
                 SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
                 SDL_GPUTextureLocation sl, dl;
                 memset(&sl, 0, sizeof sl); memset(&dl, 0, sizeof dl);
                 sl.texture = r; dl.texture = g_rt;
+                SDL_CopyGPUTextureToTexture(cp, &sl, &dl, g_tw, g_th, 1, false);
+                SDL_EndGPUCopyPass(cp);
+            }
+            if (scene_comp_amount() > 0.0f && g_post_tmp &&
+                gpu_out_scene_comp(g_dev, cmd, g_rt, g_post_tmp, g_rt_fmt, scene_comp_amount())) {   /* 3D: less of the gamut expansion */
+                static int told;
+                if (!told) { told = 1; fprintf(stderr, "[GPU] 3D colour pass active: the 3D gets %.0f%% of the gamut expansion (OT_HDR_SCENE)\n", (1.0f - scene_comp_amount()) * 100.0f); }
+                SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+                SDL_GPUTextureLocation sl, dl;
+                memset(&sl, 0, sizeof sl); memset(&dl, 0, sizeof dl);
+                sl.texture = g_post_tmp; dl.texture = g_rt;
                 SDL_CopyGPUTextureToTexture(cp, &sl, &dl, g_tw, g_th, 1, false);
                 SDL_EndGPUCopyPass(cp);
             }
@@ -687,6 +701,15 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
  * display's headroom is read from the window each frame: it changes with the display's brightness. */
 static int g_hdr;
 void d3d8_gpu_set_hdr(int on) { g_hdr = on; }
+/* OT_HDR_SCENE (default 0.45): the share of the wide-gamut expansion the 3D picture gets, against 1 for the HUD and menus. The 3D
+ * is made less saturated before the final pass (d3d8_gpu_out.c, gpu_out_scene_comp) at the FRAME_END marker. 0 = the amount is
+ * returned as how far to move the colours back (1 - share); 0 = nothing to do. */
+static float scene_comp_amount(void)
+{
+    static float k = -2.0f;
+    if (k < -1.0f) { const char *e = getenv("OT_HDR_SCENE"); k = (e && e[0]) ? (float)atof(e) : 0.45f; if (k < 0.0f) k = 0.0f; if (k > 1.0f) k = 1.0f; }
+    return g_hdr && k < 1.0f ? 1.0f - k : 0.0f;
+}
 static float envf(const char *name, float dflt)
 {
     const char *e = getenv(name);
@@ -933,11 +956,11 @@ static int smaa_preset(void)
     }
     return v;
 }
-int  d3d8_post_split_wanted(void) { return smaa_preset() > 0; }
+int  d3d8_post_split_wanted(void) { return smaa_preset() > 0 || scene_comp_amount() > 0.0f; }
 void d3d8_PassPhaseChanged(int old_phase, int new_phase, unsigned tag)
 {
     (void)old_phase; (void)tag;
-    if (new_phase != 5 /* PGRAPH_PHASE_END */ || smaa_preset() <= 0) return;
+    if (new_phase != 5 /* PGRAPH_PHASE_END */ || (smaa_preset() <= 0 && scene_comp_amount() <= 0.0f)) return;
     op_new(OP_FRAME_END);
 }
 

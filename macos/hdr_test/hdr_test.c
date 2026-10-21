@@ -105,6 +105,48 @@ int main(void)
             }
         }
     }
+    {   /* the scene pass: comp(amount = 1 - k) then the gamut matrix must equal the gamut matrix at strength k */
+        SDL_GPUTexture *mid;
+        float direct[N][3];
+        const float k = 0.45f;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        mid = SDL_CreateGPUTexture(dev, &ti);
+        for (mode = 0; mode < 2; mode++) {
+            cmd = SDL_AcquireGPUCommandBuffer(dev);
+            if (mode == 0) {   /* direct: gamut strength k on the original */
+                p.gamut = k; p.warm = 0; p.boost = 0; p.headroom = 1.0f;
+                gpu_out_draw(dev, cmd, src, dst, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, &all, &p);
+            } else {           /* scene pass, then the full matrix */
+                p.gamut = 1.0f; p.warm = 0; p.boost = 0; p.headroom = 1.0f;
+                gpu_out_scene_comp(dev, cmd, src, mid, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1.0f - k);
+                gpu_out_draw(dev, cmd, mid, dst, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, &all, &p);
+            }
+            cp = SDL_BeginGPUCopyPass(cmd);
+            memset(&ts, 0, sizeof ts); memset(&tr, 0, sizeof tr);
+            ts.transfer_buffer = down; ts.pixels_per_row = N * W; ts.rows_per_layer = 1;
+            tr.texture = dst; tr.w = N * W; tr.h = 1; tr.d = 1;
+            SDL_DownloadFromGPUTexture(cp, &tr, &ts);
+            SDL_EndGPUCopyPass(cp);
+            fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+            SDL_WaitForGPUFences(dev, true, &fence, 1); SDL_ReleaseGPUFence(dev, fence);
+            out = (unsigned short *)SDL_MapGPUTransferBuffer(dev, down, false);
+            for (i = 0; i < N; i++) {
+                int kk = i * W + 2, c;
+                for (c = 0; c < 3; c++) {
+                    float v = half_to_float(out[kk * 4 + c]);
+                    if (mode == 0) direct[i][c] = v; else res[i][c] = v;
+                }
+            }
+            SDL_UnmapGPUTransferBuffer(dev, down);
+        }
+        printf("scene pass (net gamut strength %.2f), via comp + matrix vs direct\n", k);
+        for (i = 0; i < N; i++) {
+            float d = fmaxf(fabsf(res[i][0] - direct[i][0]), fmaxf(fabsf(res[i][1] - direct[i][1]), fabsf(res[i][2] - direct[i][2])));
+            printf("  %-11s via %7.4f %7.4f %7.4f  direct %7.4f %7.4f %7.4f  max diff %.4f\n", P[i].name, res[i][0], res[i][1], res[i][2],
+                   direct[i][0], direct[i][1], direct[i][2], d);
+            if (d > 0.012f) { bad++; printf("  FAIL: scene pass does not compose to the direct result\n"); }
+        }
+    }
     printf("%s\n", bad ? "FAILED" : "all checks held");
     return bad != 0;
 }

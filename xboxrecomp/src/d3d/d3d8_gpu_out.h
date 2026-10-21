@@ -20,4 +20,10 @@ char *gpu_out_source(void);
 int gpu_out_draw(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, SDL_GPUTexture *dst,
                  SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, const GpuOutParams *p);
 
+/* The scene pass: src -> dst (same size and format fmt), colours moved back by `amount`: 0 unchanged, 1 the gamut matrix of
+ * gpu_out_draw (gamut = 1) fully undone, so that matrix then gives the picture its original colours; in between, the
+ * picture ends with the fraction 1 - amount of the expansion. Used on the 3D alone, so it gets less of it than the HUD. */
+int gpu_out_scene_comp(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, SDL_GPUTexture *dst,
+                       SDL_GPUTextureFormat fmt, float amount);
+
 #endif
