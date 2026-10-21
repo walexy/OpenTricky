@@ -3071,7 +3071,11 @@ static void vb_slot_set(ProgVertex *v)
 {
     if (g_vb_protected) {
         void *pg = (void *)g_vb_slot;
-        if (mprotect(pg, 16384, PROT_READ | PROT_WRITE) != 0) { vb_slot_report("mprotect(read-write)"); *g_vb_slot = v; return; }
+        if (mprotect(pg, 16384, PROT_READ | PROT_WRITE) != 0) {
+            /* the page is still read-only, so the store below could not succeed: say so and stop rather than fault obscurely */
+            fprintf(stderr, "[NV2A] vb guard page: mprotect(read-write) failed: %s; cannot update the vertex buffer pointer\n", strerror(errno));
+            abort();
+        }
         *g_vb_slot = v;
         if (mprotect(pg, 16384, PROT_READ) != 0) vb_slot_report("mprotect(read-only, again)");
     } else {
