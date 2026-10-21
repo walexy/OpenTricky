@@ -8,6 +8,8 @@
 #if defined(OT_HAVE_WINDOW)
 
 #include <pthread.h>
+#include <time.h>
+#include <sys/stat.h>
 #include <SDL3/SDL.h>
 
 #define GUEST_STACK_BYTES ((size_t)64 * 1024 * 1024)   /* lifted code keeps big frames on the native stack */
@@ -74,6 +76,59 @@ static void pad_open_all(void)
             }
     }
     SDL_free(ids);
+}
+
+/* ---- display shape: what the title is told and how big the window starts ---------------------------------------------
+ * The title is told its display is widescreen, and how wide, before it starts (XBOX_ASPECT / XBOX_RENDER, read by
+ * main.c); the wider view cannot change while it runs. OT_SHAPE chooses it: auto (the desktop's own shape, 4:3 below
+ * 1.5, 16:9 up to 1.95), 4:3, 16:9, 21:9, 32:9, or a number (width / height). OT_RENDER_H is the scene target's height
+ * in pixels (default 1080 for the wide shapes, 960 at 4:3). Environment XBOX_ASPECT / XBOX_RENDER / XBOX_WIDESCREEN set
+ * by the user win. Returns the shape the window should have (0 = 4:3). */
+static double choose_display(void)
+{
+    const char *sh = getenv("OT_SHAPE");
+    double A = 0.0;
+    if (getenv("XBOX_ASPECT") || getenv("XBOX_RENDER") || getenv("XBOX_WIDESCREEN")) {
+        unsigned rw = 0, rh = 0; const char *r = getenv("XBOX_RENDER");
+        if (r && sscanf(r, "%ux%u", &rw, &rh) == 2 && rw && rh) return (double)rw / (double)rh;
+        return getenv("XBOX_WIDESCREEN") ? 16.0 / 9.0 : 0.0;
+    }
+    if (!sh || !sh[0] || !strcmp(sh, "auto")) {
+        SDL_DisplayID d = SDL_GetPrimaryDisplay();
+        const SDL_DisplayMode *m = d ? SDL_GetDesktopDisplayMode(d) : NULL;
+        double a = (m && m->w > 0 && m->h > 0) ? (double)m->w / (double)m->h : 16.0 / 9.0;
+        A = a < 1.5 ? 0.0 : a < 1.95 ? 16.0 / 9.0 : a;
+    } else if (!strcmp(sh, "4:3")) A = 0.0;
+    else if (!strcmp(sh, "16:9")) A = 16.0 / 9.0;
+    else if (!strcmp(sh, "21:9")) A = 64.0 / 27.0;          /* 2560x1080 / 3440x1440 are 2.37 / 2.39 */
+    else if (!strcmp(sh, "32:9")) A = 32.0 / 9.0;
+    else { A = atof(sh); if (A < 1.4) A = 0.0; }
+    if (A > 1.0) {
+        char buf[64]; const char *rh = getenv("OT_RENDER_H"); unsigned h = (rh && atoi(rh) >= 480) ? (unsigned)atoi(rh) : 1080u;
+        unsigned w = (unsigned)(h * A + 0.5) & ~1u;
+        setenv("XBOX_ASPECT", "auto", 1);
+        snprintf(buf, sizeof buf, "%ux%u", w, h & ~1u);
+        setenv("XBOX_RENDER", buf, 1);
+    } else if (getenv("OT_RENDER_H") && atoi(getenv("OT_RENDER_H")) >= 480) {
+        char buf[64]; unsigned h = (unsigned)atoi(getenv("OT_RENDER_H")) & ~1u;
+        snprintf(buf, sizeof buf, "%ux%u", (unsigned)(h * 4 / 3) & ~1u, h);
+        setenv("XBOX_RENDER", buf, 1);
+    }
+    return A;
+}
+
+static void screenshot_request(void)
+{
+    extern void d3d8_gpu_request_screenshot(const char *path);
+    char dir[1024], path[1200]; time_t t = time(NULL); struct tm tmv;
+    const char *home = getenv("HOME");
+    if (!home) return;
+    snprintf(dir, sizeof dir, "%s/Pictures/OpenTricky", home);
+    mkdir(dir, 0755);
+    localtime_r(&t, &tmv);
+    snprintf(path, sizeof path, "%s/SSX-Tricky-%04d%02d%02d-%02d%02d%02d.png", dir, tmv.tm_year + 1900, tmv.tm_mon + 1,
+             tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    d3d8_gpu_request_screenshot(path);
 }
 
 static int16_t axis_y(int16_t v) { return v == -32768 ? 32767 : (int16_t)-v; }   /* SDL down is +, XInput up is + */
@@ -198,8 +253,14 @@ int ot_window_run(int (*guest)(void *), void *arg)
         return guest(arg);
     }
 #if defined(OT_GPU_RENDERER)
-    win = SDL_CreateWindow("SSX Tricky (OpenTricky, macOS: 3D in progress)", 1280, 960,
-                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    {
+        double shape = choose_display();
+        int ww = 1200, wh = 900;
+        if (shape > 1.0) { wh = 900; ww = (int)(900.0 * shape + 0.5); if (ww > 2400) { ww = 2400; wh = (int)(2400.0 / shape + 0.5); } }
+        win = SDL_CreateWindow("SSX Tricky (OpenTricky, macOS)", ww, wh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        if (win && (getenv("XBOX_FULLSCREEN") ? getenv("XBOX_FULLSCREEN")[0] == '1' : getenv("OT_FULLSCREEN") && getenv("OT_FULLSCREEN")[0] == '1'))
+            SDL_SetWindowFullscreen(win, true);
+    }
     {
         /* The GPU renderer (xboxrecomp/src/d3d/d3d8_gpu.c) owns the window's swapchain: it draws and presents
          * from the thread that presents. This thread only runs the event loop. */
@@ -250,6 +311,10 @@ int ot_window_run(int (*guest)(void *), void *arg)
         int have;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) quit = 1;
+            else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat &&
+                     (ev.key.key == SDLK_F11 || (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
+                { bool on = !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN); SDL_SetWindowFullscreen(win, on); fprintf(stderr, "[WINDOW] fullscreen %s\n", on ? "on" : "off"); }
+            else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F12) screenshot_request();
             else if (ev.type == SDL_EVENT_GAMEPAD_ADDED) pad_open_all();
             else if (ev.type == SDL_EVENT_GAMEPAD_REMOVED) {
                 int k;
@@ -258,6 +323,16 @@ int ot_window_run(int (*guest)(void *), void *arg)
             }
         }
         input_snapshot(win);
+        {   /* tests: OT_TEST_SCREENSHOT_AT=<seconds> presses F12, OT_TEST_FULLSCREEN_AT=<seconds> presses F11 */
+            static Uint64 t0; static int shot_done, fs_done; Uint64 now = SDL_GetTicks();
+            const char *a = getenv("OT_TEST_SCREENSHOT_AT"), *f = getenv("OT_TEST_FULLSCREEN_AT");
+            if (!t0) t0 = now;
+            if (a && !shot_done && now - t0 > (Uint64)(atof(a) * 1000.0)) { shot_done = 1; screenshot_request(); }
+            if (f && !fs_done && now - t0 > (Uint64)(atof(f) * 1000.0)) {
+                bool on = !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN);
+                fs_done = 1; SDL_SetWindowFullscreen(win, on); fprintf(stderr, "[WINDOW] fullscreen %s\n", on ? "on" : "off");
+            }
+        }
 
 #if defined(OT_GPU_RENDERER)
         SDL_Delay(4);        /* the GPU renderer presents from the game's thread */

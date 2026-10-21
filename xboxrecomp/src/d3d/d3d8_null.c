@@ -232,17 +232,58 @@ int  d3d8_ScreenshotPending(void)                { return 0; }
 
 void d3d8_SetDacPalette(const unsigned char lut[256][3]) { (void)lut; }
 void d3d8_SetShowFps(int on)                       { (void)on; }
-void d3d8_SetPresentBoxShape(double shape)         { (void)shape; }
-void d3d8_SetPointZoom(float zoom)                 { (void)zoom; }
 void d3d8_SetMsaa(int samples)                     { (void)samples; }
 void d3d8_SetHostUiHooks(const D3D8HostUiHooks *h) { (void)h; }
+
+/* Host display configuration (set by the port before the title creates its device; read by the GPU backend and
+ * the window). The semantics are those of the Windows layer (d3d8_xbox.h): render size of the scene target (0 =
+ * default), the display shape, and whether the title was told it is widescreen. */
+static unsigned s_cfg_rw, s_cfg_rh;
+static int      s_cfg_wide, s_cfg_full;
+static double   s_cfg_aspect;
+static volatile int s_present_box;
+static double   s_box_shape = 16.0 / 9.0;
+static float    s_point_zoom = 1.0f;
+
 void d3d8_SetHostDisplay(unsigned w, unsigned h, int widescreen, int fullscreen)
-{ (void)w; (void)h; (void)widescreen; (void)fullscreen; }
-void d3d8_SetHostAspect(double aspect)             { (void)aspect; }
+{ s_cfg_rw = w; s_cfg_rh = h; s_cfg_wide = widescreen ? 1 : 0; s_cfg_full = fullscreen ? 1 : 0; }
+void d3d8_SetHostAspect(double aspect)             { s_cfg_aspect = aspect > 1.0 ? aspect : 0.0; }
+double d3d8_HostAspect(void)
+{
+    if (s_cfg_aspect > 0.0) return s_cfg_aspect;
+    return s_cfg_wide ? 16.0 / 9.0 : 4.0 / 3.0;
+}
+int  d3d8_HostIsWidescreen(void)                   { return s_cfg_wide; }
+int  d3d8_HostWantsFullscreen(void)                { return s_cfg_full; }
+void d3d8_SetPresentBox(int on)                    { s_present_box = on ? 1 : 0; }
+int  d3d8_PresentBoxOn(void)                       { return s_present_box; }
+void d3d8_SetPresentBoxShape(double shape)         { s_box_shape = shape > 1.0 ? shape : 16.0 / 9.0; }
+double d3d8_PresentBoxShape(void)                  { return s_box_shape; }
+void d3d8_SetPointZoom(float zoom)                 { s_point_zoom = zoom > 0.0f ? zoom : 1.0f; }
+float d3d8_PointZoom(void)                         { return s_point_zoom; }
+
+/* The size of the scene target: XBOX_RENDER's (set by the port) or, by default, 960 rows (2x the title's 480) at
+ * the display shape: 1280x960 at 4:3. */
+void d3d8_host_target_size(unsigned *w, unsigned *h)
+{
+    unsigned rw = s_cfg_rw, rh = s_cfg_rh;
+    if (!rw || !rh) {
+        rh = 960;
+        rw = (unsigned)(rh * d3d8_HostAspect() + 0.5);
+    }
+    if (rw < 640) rw = 640;
+    if (rh < 480) rh = 480;
+    if (rw > 8192) rw = 8192;
+    if (rh > 4320) rh = 4320;
+    *w = rw & ~1u; *h = rh & ~1u;
+}
 void d3d8_SetAnisotropy(int n)                     { (void)n; }
 void d3d8_PassPhaseChanged(int o, int n, unsigned tag) { (void)o; (void)n; (void)tag; }
-void d3d8_HostSetFullscreen(int on)                { (void)on; }
-int  d3d8_HostIsFullscreen(void)                   { return 0; }
+/* the window (port/src/ot_window.c) installs these when it owns a window */
+void (*d3d8_host_fullscreen_hook)(int on);
+int  (*d3d8_host_isfullscreen_hook)(void);
+void d3d8_HostSetFullscreen(int on)                { if (d3d8_host_fullscreen_hook) d3d8_host_fullscreen_hook(on); }
+int  d3d8_HostIsFullscreen(void)                   { return d3d8_host_isfullscreen_hook ? d3d8_host_isfullscreen_hook() : 0; }
 void d3d8_HostExit(void)                           { exit(0); }
 HWND d3d8_GetHostWindow(void)                      { return NULL; }
 int  d3d8_monitor_hz(HWND hwnd)                    { (void)hwnd; return 60; }

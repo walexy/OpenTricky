@@ -11,3 +11,15 @@ The app is a thin wrapper (`ssx-launcher.sh`):
 - shows a dialog if Homebrew libraries are missing (`brew install sdl3 sdl2-compat openssl@4`) or the game ends abnormally.
 
 Not covered: the game binary still links the Homebrew copies of SDL3, SDL2-compat and OpenSSL (not bundled, so the app is not self-contained and cannot be given to someone without them); the app has no icon; it is ad hoc signed only (a copy downloaded from elsewhere would need Gatekeeper approval); the file-dialog, missing-library and crash dialogs were not exercised (they need a person at the screen).
+
+## Display settings (widescreen, resolution, full screen, screenshots)
+
+By default the game is told the shape of your desktop (4:3 below 1.5, 16:9 up to 1.95, wider shapes as they are, e.g. 21:9) and the GPU draws at 1080 rows (960 at 4:3); the window starts at that shape.
+Change it with a file `~/Library/Application Support/OpenTricky/display.env` (read by the app, or export the same names in Terminal):
+
+    OT_SHAPE=21:9        # auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number such as 2.39
+    OT_RENDER_H=1440     # rows the GPU draws (480 or more; the width follows the shape)
+    OT_FULLSCREEN=1      # start in full screen
+
+In the game window: **F11** or **Alt+Enter** toggles full screen, **F12** saves a PNG of the game picture at the render size to `~/Pictures/OpenTricky/`.
+The shape is fixed at start (the game is told its screen shape then), so changing `OT_SHAPE` needs a restart. Menus keep the game's own 16:9 frame on wider screens; movies keep 4:3.

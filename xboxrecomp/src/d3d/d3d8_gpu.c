@@ -32,6 +32,10 @@
 /* device and swapchain, attached by the port (main thread)           */
 /* ================================================================= */
 
+extern void d3d8_host_target_size(unsigned *w, unsigned *h);
+extern int d3d8_PresentBoxOn(void);
+extern double d3d8_PresentBoxShape(void);
+static unsigned g_tw = TITLE_W, g_th = TITLE_H;     /* the scene target's size (d3d8_host_target_size) */
 static SDL_GPUDevice *g_dev;
 static SDL_Window    *g_win;
 static SDL_GPUTexture *g_rt, *g_ds, *g_movie;
@@ -442,14 +446,16 @@ static int ensure_targets(void)
 {
     SDL_GPUTextureCreateInfo ti;
     if (g_rt) return 1;
+    d3d8_host_target_size(&g_tw, &g_th);
+    fprintf(stderr, "[GPU] scene target %ux%u (display shape %.3f)\n", g_tw, g_th, d3d8_HostAspect());
     memset(&ti, 0, sizeof ti);
-    ti.type = SDL_GPU_TEXTURETYPE_2D; ti.format = g_rt_fmt; ti.width = TITLE_W; ti.height = TITLE_H;
+    ti.type = SDL_GPU_TEXTURETYPE_2D; ti.format = g_rt_fmt; ti.width = g_tw; ti.height = g_th;
     ti.layer_count_or_depth = 1; ti.num_levels = 1; ti.sample_count = SDL_GPU_SAMPLECOUNT_1;
     ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
     g_rt = SDL_CreateGPUTexture(g_dev, &ti);
     ti.format = g_ds_fmt; ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
     g_ds = SDL_CreateGPUTexture(g_dev, &ti);
-    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER; ti.width = TITLE_W; ti.height = TITLE_H;
     g_movie = SDL_CreateGPUTexture(g_dev, &ti);
     if (!g_rt || !g_ds || !g_movie) { fprintf(stderr, "[GPU] target creation failed: %s\n", SDL_GetError()); return 0; }
     return 1;
@@ -525,7 +531,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             /* a colour clear that covers the target, and depth / stencil (cleared whole, as on the D3D11 layer) */
             pass = begin_pass(cmd, cc && full, o->color, cz, o->z, cs, (Uint8)o->stencil);
             if (cc && !full && o->count) {
-                PKey k; SDL_GPUGraphicsPipeline *p; SDL_GPUBufferBinding bb; SDL_Rect all = { 0, 0, TITLE_W, TITLE_H };
+                PKey k; SDL_GPUGraphicsPipeline *p; SDL_GPUBufferBinding bb; SDL_Rect all = { 0, 0, (int)g_tw, (int)g_th };
                 float screen[4] = { TITLE_W, TITLE_H, 0, 0 }, fs[8] = { 0, 0, 0, 0, 0, 1, 1, 0 };
                 memset(&k, 0, sizeof k); k.cwrite = 0xF; k.src = D3DBLEND_ONE; k.dst = D3DBLEND_ZERO; k.op = 1;
                 k.z_func = D3DCMP_ALWAYS; k.st_func = D3DCMP_ALWAYS; k.prim = D3DPT_TRIANGLELIST;
@@ -550,12 +556,14 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             if (!p || !g_vbuf || !bind_samplers(pass, o)) continue;
             SDL_BindGPUGraphicsPipeline(pass, p);
             if (o->scissor_on) {
-                SDL_Rect r; r.x = (int)o->sc[0]; r.y = (int)o->sc[1]; r.w = (int)(o->sc[2] - o->sc[0] + 1); r.h = (int)(o->sc[3] - o->sc[1] + 1);
+                float gsx = (float)g_tw / (float)TITLE_W, gsy = (float)g_th / (float)TITLE_H;   /* clip rectangles are in title pixels */
+                SDL_Rect r; r.x = (int)(o->sc[0] * gsx); r.y = (int)(o->sc[1] * gsy);
+                r.w = (int)((o->sc[2] + 1) * gsx) - r.x; r.h = (int)((o->sc[3] + 1) * gsy) - r.y;
                 if (r.x < 0) { r.w += r.x; r.x = 0; } if (r.y < 0) { r.h += r.y; r.y = 0; }
                 if (r.w < 0) r.w = 0; if (r.h < 0) r.h = 0;
                 SDL_SetGPUScissor(pass, &r);
             } else {
-                SDL_Rect r = { 0, 0, TITLE_W, TITLE_H }; SDL_SetGPUScissor(pass, &r);
+                SDL_Rect r = { 0, 0, (int)g_tw, (int)g_th }; SDL_SetGPUScissor(pass, &r);
             }
             SDL_SetGPUStencilReference(pass, (Uint8)o->stencil_ref);
             SDL_PushGPUVertexUniformData(cmd, 0, screen, sizeof screen);
@@ -573,7 +581,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
     g_rt_cleared = 1;
 }
 
-static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int src_w, int src_h)
+static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int src_w, int src_h, double shape)
 {
     SDL_GPUTexture *sc = NULL; Uint32 w = 0, h = 0;
     SDL_GPUBlitInfo bi;
@@ -581,8 +589,8 @@ static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int s
     memset(&bi, 0, sizeof bi);
     bi.source.texture = src; bi.source.w = (Uint32)src_w; bi.source.h = (Uint32)src_h;
     bi.destination.texture = sc;
-    {   /* letterbox to 4:3 */
-        double ar = 4.0 / 3.0, wa = (double)w / (double)h; Uint32 dw = w, dh = h;
+    {   /* letterbox to the picture's shape */
+        double ar = shape > 0.5 ? shape : 4.0 / 3.0, wa = (double)w / (double)h; Uint32 dw = w, dh = h;
         if (wa > ar) dw = (Uint32)((double)h * ar + 0.5); else dh = (Uint32)((double)w / ar + 0.5);
         bi.destination.x = (w - dw) / 2; bi.destination.y = (h - dh) / 2; bi.destination.w = dw; bi.destination.h = dh;
     }
@@ -611,38 +619,76 @@ static int shot_wanted(unsigned scene_present, int movie)
     return 0;
 }
 
-static void shot_save(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *tex, int rgba_order, unsigned n)
+/* Read a texture back and write it: a PPM (the OT_GPU_SHOT test hook) or a PNG (the F12 screenshot). Submits `cmd`. */
+static int capture_save(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *tex, unsigned w, unsigned h, int rgba_order,
+                        const char *path, int png)
 {
     SDL_GPUTransferBufferCreateInfo ti; SDL_GPUTransferBuffer *tb; SDL_GPUCopyPass *cp;
     SDL_GPUTextureRegion reg; SDL_GPUTextureTransferInfo dst; SDL_GPUFence *fence; void *map;
-    char path[1024]; FILE *f; unsigned x, y;
-    memset(&ti, 0, sizeof ti); ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD; ti.size = TITLE_W * TITLE_H * 4;
+    int ok = 0; unsigned x, y;
+    memset(&ti, 0, sizeof ti); ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD; ti.size = w * h * 4;
     tb = SDL_CreateGPUTransferBuffer(g_dev, &ti);
-    if (!tb) return;
+    if (!tb) { SDL_SubmitGPUCommandBuffer(cmd); return 0; }
     cp = SDL_BeginGPUCopyPass(cmd);
     memset(&reg, 0, sizeof reg); memset(&dst, 0, sizeof dst);
-    reg.texture = tex; reg.w = TITLE_W; reg.h = TITLE_H; reg.d = 1;
-    dst.transfer_buffer = tb; dst.pixels_per_row = TITLE_W; dst.rows_per_layer = TITLE_H;
+    reg.texture = tex; reg.w = w; reg.h = h; reg.d = 1;
+    dst.transfer_buffer = tb; dst.pixels_per_row = w; dst.rows_per_layer = h;
     SDL_DownloadFromGPUTexture(cp, &reg, &dst);
     SDL_EndGPUCopyPass(cp);
     fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
     if (fence) { SDL_WaitForGPUFences(g_dev, true, &fence, 1); SDL_ReleaseGPUFence(g_dev, fence); }
     map = SDL_MapGPUTransferBuffer(g_dev, tb, false);
-    snprintf(path, sizeof path, "%s_%s%u.ppm", getenv("OT_GPU_SHOT"), rgba_order ? "m" : "", n);
-    f = map ? fopen(path, "wb") : NULL;
-    if (f) {
-        fprintf(f, "P6\n%d %d\n255\n", TITLE_W, TITLE_H);
-        for (y = 0; y < TITLE_H; y++)
-            for (x = 0; x < TITLE_W; x++) {
-                const uint8_t *px = (const uint8_t *)map + ((size_t)y * TITLE_W + x) * 4;    /* B G R A */
-                uint8_t rgb[3] = { rgba_order ? px[0] : px[2], px[1], rgba_order ? px[2] : px[0] };
-                fwrite(rgb, 1, 3, f);
+    if (map && png) {
+        uint8_t *rgba = (uint8_t *)malloc((size_t)w * h * 4);
+        if (rgba) {
+            for (y = 0; y < h; y++)
+                for (x = 0; x < w; x++) {
+                    const uint8_t *px = (const uint8_t *)map + ((size_t)y * w + x) * 4;      /* B G R A, or R G B A for the movie */
+                    uint8_t *o = rgba + ((size_t)y * w + x) * 4;
+                    o[0] = rgba_order ? px[0] : px[2]; o[1] = px[1]; o[2] = rgba_order ? px[2] : px[0]; o[3] = 255;
+                }
+            {
+                SDL_Surface *sf = SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_RGBA32, rgba, (int)w * 4);
+                ok = sf && SDL_SavePNG(sf, path);
+                if (!ok) fprintf(stderr, "[GPU] screenshot %s failed: %s\n", path, SDL_GetError());
+                if (sf) SDL_DestroySurface(sf);
             }
-        fclose(f);
-        fprintf(stderr, "[GPU] saved the %s at present %u to %s\n", rgba_order ? "movie frame" : "3D target", n, path);
+            free(rgba);
+        }
+    } else if (map) {
+        FILE *f = fopen(path, "wb");
+        if (f) {
+            fprintf(f, "P6\n%u %u\n255\n", w, h);
+            for (y = 0; y < h; y++)
+                for (x = 0; x < w; x++) {
+                    const uint8_t *px = (const uint8_t *)map + ((size_t)y * w + x) * 4;
+                    uint8_t rgb[3] = { rgba_order ? px[0] : px[2], px[1], rgba_order ? px[2] : px[0] };
+                    fwrite(rgb, 1, 3, f);
+                }
+            fclose(f); ok = 1;
+        }
     }
     if (map) SDL_UnmapGPUTransferBuffer(g_dev, tb);
     SDL_ReleaseGPUTransferBuffer(g_dev, tb);
+    return ok;
+}
+
+static void shot_save(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *tex, int rgba_order, unsigned n)
+{
+    char path[1024];
+    snprintf(path, sizeof path, "%s_%s%u.ppm", getenv("OT_GPU_SHOT"), rgba_order ? "m" : "", n);
+    if (capture_save(cmd, tex, rgba_order ? TITLE_W : g_tw, rgba_order ? TITLE_H : g_th, rgba_order, path, 0))
+        fprintf(stderr, "[GPU] saved the %s at present %u to %s\n", rgba_order ? "movie frame" : "3D target", n, path);
+}
+
+/* F12 (the window asks): the next scene frame is written as a PNG at the scene target's size. */
+static char g_shot_req_path[1024];
+static volatile int g_shot_req;
+void d3d8_gpu_request_screenshot(const char *path)
+{
+    if (!path) return;
+    snprintf(g_shot_req_path, sizeof g_shot_req_path, "%s", path);
+    g_shot_req = 1;
 }
 
 /* The scene (recorded draws) or a movie frame (RGBA from the guest framebuffer) reaches the window. */
@@ -687,7 +733,7 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
             dst.texture = g_movie; dst.w = mw; dst.h = mh; dst.d = 1;
             SDL_UploadToGPUTexture(cp, &src, &dst, false);
             SDL_EndGPUCopyPass(cp);
-            blit_to_window(cmd, g_movie, (int)mw, (int)mh);
+            blit_to_window(cmd, g_movie, (int)mw, (int)mh, 4.0 / 3.0);     /* movies keep their own 4:3 */
             { static unsigned movie_presents; movie_presents++;
               if (shot_wanted(movie_presents, 1)) { shot_save(cmd, g_movie, 1, movie_presents); cmd = NULL; } }
         }
@@ -697,9 +743,17 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
         upload_arena(cmd);
         upload_textures(cmd);
         replay_ops(cmd);
-        blit_to_window(cmd, g_rt, TITLE_W, TITLE_H);
+        {   /* the scene's shape; a frame the translator marked as boxed (menus kept at the title's own shape) is squeezed
+             * into a centred box of that shape */
+            double a = d3d8_HostAspect(), box = d3d8_PresentBoxShape();
+            blit_to_window(cmd, g_rt, (int)g_tw, (int)g_th, d3d8_PresentBoxOn() && a > box + 0.005 ? box : a);
+        }
         scene_presents++;
-        if (shot_wanted(scene_presents, 0)) { shot_save(cmd, g_rt, 0, scene_presents); cmd = NULL; }
+        if (g_shot_req) {
+            g_shot_req = 0;
+            if (capture_save(cmd, g_rt, g_tw, g_th, 0, g_shot_req_path, 1)) fprintf(stderr, "[GPU] screenshot saved: %s\n", g_shot_req_path);
+            cmd = NULL;
+        } else if (shot_wanted(scene_presents, 0)) { shot_save(cmd, g_rt, 0, scene_presents); cmd = NULL; }
     }
     if (cmd) SDL_SubmitGPUCommandBuffer(cmd);
     reset_frame();
@@ -1193,10 +1247,12 @@ IDirect3DDevice8 *xbox_GetD3DDevice(void) { return g_inited ? &g_device : NULL; 
 
 unsigned d3d8_GetBackbufferWidth(void)  { return TITLE_W; }
 unsigned d3d8_GetBackbufferHeight(void) { return TITLE_H; }
-void   d3d8_GetGuestScale(float *sx, float *sy) { if (sx) *sx = 1.0f; if (sy) *sy = 1.0f; }
-double d3d8_HostAspect(void) { return 4.0 / 3.0; }
-void   d3d8_SetPresentBox(int on) { (void)on; }
-float  d3d8_PointZoom(void) { return 1.0f; }
+void   d3d8_GetGuestScale(float *sx, float *sy)    /* scene-target pixels per title pixel */
+{
+    unsigned w, h; d3d8_host_target_size(&w, &h);
+    if (sx) *sx = (float)w / (float)TITLE_W;
+    if (sy) *sy = (float)h / (float)TITLE_H;
+}
 void   d3d8_PlagShot(void) {}
 unsigned d3d8_DebugPeekScene(float fx, float fy) { (void)fx; (void)fy; return 0; }
 IDirect3DTexture8 *d3d8_PrevFrameTexture(void) { return NULL; }

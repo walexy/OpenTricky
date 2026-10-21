@@ -52,6 +52,12 @@ fi
 LINK="$SUPPORT/$APP_NAME"
 ln -sf "$BIN" "$LINK"
 
+# optional display settings: ~/Library/Application Support/OpenTricky/display.env, lines like
+#   OT_SHAPE=21:9        auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number
+#   OT_RENDER_H=1440     height of the picture the GPU draws (default 1080 wide, 960 at 4:3)
+#   OT_FULLSCREEN=1      start in full screen (F11 or Alt+Enter toggles; F12 saves a screenshot to ~/Pictures/OpenTricky)
+if [ -f "$SUPPORT/display.env" ]; then set -a; . "$SUPPORT/display.env"; set +a; fi
+
 cd "$SUPPORT" || exit 1
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
 "$LINK" --direct "$ISO" > "$LOG" 2>&1
