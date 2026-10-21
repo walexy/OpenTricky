@@ -1180,7 +1180,14 @@ BOOL FlushFileBuffers(HANDLE h)
 /* via SDL_GetKeyboardState when main.c gets its SDL2 port.              */
 /* ===================================================================== */
 
-SHORT GetAsyncKeyState(int vKey)          { (void)vKey; return 0; }
+/* Host input, supplied by the port's window (SDL3): a key (Win32 virtual-key code) is down, a pad's state, and
+ * whether the game window has the keyboard focus. NULL = no input (headless). */
+int (*w32_key_hook)(int vk);
+int (*w32_pad_hook)(unsigned port, XINPUT_STATE *st);
+int (*w32_focus_hook)(void);
+int w32_input_focused(void) { return w32_focus_hook ? w32_focus_hook() : 0; }
+
+SHORT GetAsyncKeyState(int vKey)          { return (w32_key_hook && w32_key_hook(vKey)) ? (SHORT)0x8000 : 0; }
 HWND  FindWindowA(LPCSTR c, LPCSTR w)     { (void)c; (void)w; return NULL; }
 HWND  GetActiveWindow(void)               { return NULL; }
 BOOL  SetWindowTextA(HWND h, LPCSTR t)    { (void)h; (void)t; return TRUE; }
@@ -1202,7 +1209,10 @@ LRESULT DispatchMessageA(const MSG *m) { (void)m; return 0; }
 
 /* XInput stub: real gamepad is wired through input_compat (SDL2). */
 DWORD XInputGetState(DWORD idx, XINPUT_STATE *state)
-{ (void)idx; if (state) memset(state, 0, sizeof(*state)); return ERROR_DEVICE_NOT_CONNECTED; }
+{
+    if (state) memset(state, 0, sizeof(*state));
+    return (w32_pad_hook && state && w32_pad_hook(idx, state)) ? ERROR_SUCCESS : ERROR_DEVICE_NOT_CONNECTED;
+}
 
 BOOL TerminateProcess(HANDLE process, UINT exitCode)
 {

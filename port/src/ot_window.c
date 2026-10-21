@@ -14,6 +14,114 @@
 
 /* ---- frame mailbox: written by the presenting thread, read by the window thread ---- */
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* ---- input: the event thread snapshots the keyboard and the pads; the game thread reads the snapshot through the
+ * hooks the Win32 layer exposes (GetAsyncKeyState, XInputGetState, the focus test) ---------------------------- */
+typedef struct { uint32_t packet; uint16_t buttons; uint8_t lt, rt; int16_t lx, ly, rx, ry; } OtXPad;   /* = XINPUT_STATE */
+extern int (*w32_key_hook)(int vk);
+extern int (*w32_pad_hook)(unsigned port, OtXPad *st);
+extern int (*w32_focus_hook)(void);
+
+static volatile uint8_t s_key[256];       /* by Win32 virtual-key code */
+static volatile int s_focus;
+static OtXPad s_pad[4];                   /* guarded by s_pad_lock */
+static volatile int s_pad_on[4];
+static SDL_Gamepad *s_gp[4];
+static pthread_mutex_t s_pad_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static const struct { SDL_Scancode sc; uint8_t vk; } k_vk[] = {
+    { SDL_SCANCODE_SPACE, 0x20 }, { SDL_SCANCODE_RETURN, 0x0D }, { SDL_SCANCODE_ESCAPE, 0x1B }, { SDL_SCANCODE_TAB, 0x09 },
+    { SDL_SCANCODE_BACKSPACE, 0x08 }, { SDL_SCANCODE_CAPSLOCK, 0x14 }, { SDL_SCANCODE_UP, 0x26 }, { SDL_SCANCODE_DOWN, 0x28 },
+    { SDL_SCANCODE_LEFT, 0x25 }, { SDL_SCANCODE_RIGHT, 0x27 }, { SDL_SCANCODE_LSHIFT, 0xA0 }, { SDL_SCANCODE_RSHIFT, 0xA1 },
+    { SDL_SCANCODE_LCTRL, 0xA2 }, { SDL_SCANCODE_RCTRL, 0xA3 }, { SDL_SCANCODE_LALT, 0xA4 }, { SDL_SCANCODE_RALT, 0xA5 },
+    { SDL_SCANCODE_INSERT, 0x2D }, { SDL_SCANCODE_DELETE, 0x2E }, { SDL_SCANCODE_HOME, 0x24 }, { SDL_SCANCODE_END, 0x23 },
+    { SDL_SCANCODE_PAGEUP, 0x21 }, { SDL_SCANCODE_PAGEDOWN, 0x22 },
+    { SDL_SCANCODE_KP_0, 0x60 }, { SDL_SCANCODE_KP_1, 0x61 }, { SDL_SCANCODE_KP_2, 0x62 }, { SDL_SCANCODE_KP_3, 0x63 },
+    { SDL_SCANCODE_KP_4, 0x64 }, { SDL_SCANCODE_KP_5, 0x65 }, { SDL_SCANCODE_KP_6, 0x66 }, { SDL_SCANCODE_KP_7, 0x67 },
+    { SDL_SCANCODE_KP_8, 0x68 }, { SDL_SCANCODE_KP_9, 0x69 }, { SDL_SCANCODE_KP_MULTIPLY, 0x6A }, { SDL_SCANCODE_KP_PLUS, 0x6B },
+    { SDL_SCANCODE_KP_MINUS, 0x6D }, { SDL_SCANCODE_KP_PERIOD, 0x6E }, { SDL_SCANCODE_KP_DIVIDE, 0x6F },
+    { SDL_SCANCODE_SEMICOLON, 0xBA }, { SDL_SCANCODE_EQUALS, 0xBB }, { SDL_SCANCODE_COMMA, 0xBC }, { SDL_SCANCODE_MINUS, 0xBD },
+    { SDL_SCANCODE_PERIOD, 0xBE }, { SDL_SCANCODE_SLASH, 0xBF }, { SDL_SCANCODE_GRAVE, 0xC0 }, { SDL_SCANCODE_LEFTBRACKET, 0xDB },
+    { SDL_SCANCODE_BACKSLASH, 0xDC }, { SDL_SCANCODE_RIGHTBRACKET, 0xDD }, { SDL_SCANCODE_APOSTROPHE, 0xDE },
+};
+
+static int hook_key(int vk) { return vk > 0 && vk < 256 && s_key[vk]; }
+static int hook_focus(void) { return s_focus; }
+static int hook_pad(unsigned port, OtXPad *st)
+{
+    int ok;
+    if (port >= 4) return 0;
+    pthread_mutex_lock(&s_pad_lock);
+    ok = s_pad_on[port];
+    if (ok) *st = s_pad[port];
+    pthread_mutex_unlock(&s_pad_lock);
+    return ok;
+}
+
+static void pad_open_all(void)
+{
+    int n = 0, i, slot;
+    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    for (i = 0; ids && i < n; i++) {
+        int have = 0;
+        for (slot = 0; slot < 4; slot++) if (s_gp[slot] && SDL_GetGamepadID(s_gp[slot]) == ids[i]) have = 1;
+        if (have) continue;
+        for (slot = 0; slot < 4; slot++)
+            if (!s_gp[slot]) {
+                s_gp[slot] = SDL_OpenGamepad(ids[i]);
+                if (s_gp[slot]) fprintf(stderr, "[INPUT] pad %d: %s\n", slot, SDL_GetGamepadName(s_gp[slot]));
+                break;
+            }
+    }
+    SDL_free(ids);
+}
+
+static int16_t axis_y(int16_t v) { return v == -32768 ? 32767 : (int16_t)-v; }   /* SDL down is +, XInput up is + */
+
+static void input_snapshot(SDL_Window *win)
+{
+    int n = 0, i, slot;
+    const bool *ks = SDL_GetKeyboardState(&n);
+    static uint8_t vk_by_sc[SDL_SCANCODE_COUNT]; static int init;
+    if (!init) {
+        init = 1;
+        for (i = 0; i < (int)(sizeof k_vk / sizeof k_vk[0]); i++) vk_by_sc[k_vk[i].sc] = k_vk[i].vk;
+        for (i = 0; i < 26; i++) vk_by_sc[SDL_SCANCODE_A + i] = (uint8_t)('A' + i);
+        for (i = 0; i < 9; i++) vk_by_sc[SDL_SCANCODE_1 + i] = (uint8_t)('1' + i);
+        vk_by_sc[SDL_SCANCODE_0] = '0';
+        for (i = 0; i < 12; i++) vk_by_sc[SDL_SCANCODE_F1 + i] = (uint8_t)(0x70 + i);
+    }
+    if (ks) {
+        uint8_t now[256]; memset(now, 0, sizeof now);
+        for (i = 0; i < n && i < SDL_SCANCODE_COUNT; i++) if (ks[i] && vk_by_sc[i]) now[vk_by_sc[i]] = 1;
+        now[0x10] = now[0xA0] | now[0xA1]; now[0x11] = now[0xA2] | now[0xA3]; now[0x12] = now[0xA4] | now[0xA5];
+        for (i = 0; i < 256; i++) s_key[i] = now[i];
+    }
+    s_focus = win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    pthread_mutex_lock(&s_pad_lock);
+    for (slot = 0; slot < 4; slot++) {
+        SDL_Gamepad *g = s_gp[slot];
+        OtXPad p; uint16_t b = 0;
+        if (!g) { s_pad_on[slot] = 0; continue; }
+        memset(&p, 0, sizeof p);
+#define BTN(sdl, bit) if (SDL_GetGamepadButton(g, sdl)) b |= (bit)
+        BTN(SDL_GAMEPAD_BUTTON_DPAD_UP, 0x1); BTN(SDL_GAMEPAD_BUTTON_DPAD_DOWN, 0x2); BTN(SDL_GAMEPAD_BUTTON_DPAD_LEFT, 0x4);
+        BTN(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, 0x8); BTN(SDL_GAMEPAD_BUTTON_START, 0x10); BTN(SDL_GAMEPAD_BUTTON_BACK, 0x20);
+        BTN(SDL_GAMEPAD_BUTTON_LEFT_STICK, 0x40); BTN(SDL_GAMEPAD_BUTTON_RIGHT_STICK, 0x80);
+        BTN(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, 0x100); BTN(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, 0x200);
+        BTN(SDL_GAMEPAD_BUTTON_SOUTH, 0x1000); BTN(SDL_GAMEPAD_BUTTON_EAST, 0x2000);
+        BTN(SDL_GAMEPAD_BUTTON_WEST, 0x4000); BTN(SDL_GAMEPAD_BUTTON_NORTH, 0x8000);
+#undef BTN
+        p.buttons = b;
+        p.lt = (uint8_t)(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) >> 7);
+        p.rt = (uint8_t)(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) >> 7);
+        p.lx = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX); p.ly = axis_y(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY));
+        p.rx = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHTX); p.ry = axis_y(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHTY));
+        if (memcmp(&p.buttons, &s_pad[slot].buttons, sizeof p - 4)) p.packet = s_pad[slot].packet + 1; else p.packet = s_pad[slot].packet;
+        s_pad[slot] = p; s_pad_on[slot] = 1;
+    }
+    pthread_mutex_unlock(&s_pad_lock);
+}
 static uint8_t *s_frame;          /* latest RGBA frame */
 static unsigned s_w, s_h;
 static unsigned long s_frame_seq; /* bumped on every post */
@@ -85,7 +193,7 @@ int ot_window_run(int (*guest)(void *), void *arg)
     unsigned long shot_after = (sf && atoi(sf) > 0) ? (unsigned long)atoi(sf) : 90;
     int shot_done = 0, quit = 0;
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         fprintf(stderr, "[WINDOW] SDL_Init failed (%s): running without a window\n", SDL_GetError());
         return guest(arg);
     }
@@ -127,6 +235,8 @@ int ot_window_run(int (*guest)(void *), void *arg)
 #endif
     }
 
+    w32_key_hook = hook_key; w32_pad_hook = hook_pad; w32_focus_hook = hook_focus;
+    pad_open_all();
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, GUEST_STACK_BYTES);
     if (pthread_create(&th, &attr, guest_thread, &g) != 0) {
@@ -138,8 +248,16 @@ int ot_window_run(int (*guest)(void *), void *arg)
     while (!quit && !__atomic_load_n(&g.done, __ATOMIC_ACQUIRE)) {
         SDL_Event ev;
         int have;
-        while (SDL_PollEvent(&ev))
+        while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) quit = 1;
+            else if (ev.type == SDL_EVENT_GAMEPAD_ADDED) pad_open_all();
+            else if (ev.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                int k;
+                for (k = 0; k < 4; k++)
+                    if (s_gp[k] && !SDL_GamepadConnected(s_gp[k])) { SDL_CloseGamepad(s_gp[k]); s_gp[k] = NULL; fprintf(stderr, "[INPUT] pad %d removed\n", k); }
+            }
+        }
+        input_snapshot(win);
 
 #if defined(OT_GPU_RENDERER)
         SDL_Delay(4);        /* the GPU renderer presents from the game's thread */
