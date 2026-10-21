@@ -183,6 +183,7 @@ struct Choice: Hashable { let value: String; let label: String }
 final class Model: ObservableObject {
     // value "" = the game's own default (the key is left out of the file)
     @Published var shape = ""
+    @Published var windowH = ""
     @Published var renderH = ""
     @Published var fullscreen = false
     @Published var fps = ""
@@ -208,6 +209,8 @@ final class Model: ObservableObject {
     static let shapes = [Choice(value: "", label: "Automatic (fit the window)"), Choice(value: "4:3", label: "4:3 (original)"), Choice(value: "16:9", label: "16:9"),
                          Choice(value: "21:9", label: "21:9 ultrawide"), Choice(value: "32:9", label: "32:9 super ultrawide")]
     static let heights = [Choice(value: "", label: "1080p (default)"), Choice(value: "720", label: "720p"), Choice(value: "1440", label: "1440p"), Choice(value: "2160", label: "4K (2160p)")]
+    static let windowHeights = [Choice(value: "", label: "Large (900 high, default)"), Choice(value: "540", label: "Small (540)"), Choice(value: "720", label: "Medium (720)"),
+                                Choice(value: "1080", label: "Extra large (1080)")]
     static let fpsChoices = [Choice(value: "", label: "60 (original)"), Choice(value: "120", label: "120"), Choice(value: "144", label: "144"), Choice(value: "240", label: "240"),
                              Choice(value: "monitor", label: "Match my display"), Choice(value: "0", label: "Unlimited")]
     static let vsyncs = [Choice(value: "", label: "Default"), Choice(value: "vsync", label: "On"), Choice(value: "adaptive", label: "Adaptive"), Choice(value: "off", label: "Off")]
@@ -223,6 +226,7 @@ final class Model: ObservableObject {
         kv = KV(url: Store.settingsFile)
         let s = kv.get("OT_SHAPE") ?? ""; shape = s == "auto" ? "" : s
         renderH = kv.get("OT_RENDER_H") ?? ""
+        windowH = kv.get("OT_WINDOW_H") ?? ""; if windowH == "900" { windowH = "" }
         fullscreen = on(kv.get("OT_FULLSCREEN"))
         fps = kv.get("OT_FPS") ?? ""; if fps == "60" { fps = "" }
         vsync = kv.get("OT_VSYNC") ?? ""
@@ -241,6 +245,7 @@ final class Model: ObservableObject {
         var k = kv
         k.set("OT_SHAPE", shape.isEmpty ? nil : shape)
         k.set("OT_RENDER_H", renderH.isEmpty ? nil : renderH)
+        k.set("OT_WINDOW_H", windowH.isEmpty ? nil : windowH)
         k.set("OT_FULLSCREEN", fullscreen ? "1" : nil)
         k.set("OT_FPS", fps.isEmpty ? nil : fps)
         k.set("OT_VSYNC", vsync.isEmpty ? nil : vsync)
@@ -278,13 +283,16 @@ struct Pick: View {
 struct SettingsView: View {
     @StateObject var m = Model()
     var play: () -> Void
+    var live = false          // opened from inside the running game: no Play, changes apply the next time the game starts
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section("Display") {
                     Pick(title: "Screen shape", choices: Model.shapes, value: $m.shape)
                     Pick(title: "Render resolution", choices: Model.heights, value: $m.renderH)
+                    Pick(title: "Window size", choices: Model.windowHeights, value: $m.windowH)
                     Toggle("Start in full screen", isOn: $m.fullscreen)
+                    Text("In the game: F11 or Alt+Enter full screen, Cmd+1…4 window sizes, F9 / F10 smaller / larger (these leave full screen), F12 screenshot, Cmd+, or F2 this window.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Frame rate") {
                     Pick(title: "Frame rate limit", choices: Model.fpsChoices, value: $m.fps)
@@ -332,10 +340,14 @@ struct SettingsView: View {
             }.formStyle(.grouped)
             if !m.message.isEmpty { Text(m.message).font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
             HStack {
-                Button("Quit") { exit(1) }.keyboardShortcut(.cancelAction)
+                Button(live ? "Close" : "Quit") { exit(live ? 0 : 1) }.keyboardShortcut(.cancelAction)
+                if live { Text("Changes apply the next time the game starts.").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Button("Save") { _ = m.save() }
-                Button("Save and Play") { if m.save() { play() } }.keyboardShortcut(.defaultAction)
+                if live { Button("Save") { if m.save() { m.message = "Saved. " + m.message } }.keyboardShortcut(.defaultAction) }
+                else {
+                    Button("Save") { _ = m.save() }
+                    Button("Save and Play") { if m.save() { play() } }.keyboardShortcut(.defaultAction)
+                }
             }.padding()
         }.frame(minWidth: 540, minHeight: 640)
     }
@@ -357,7 +369,7 @@ struct SettingsView: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func applicationWillTerminate(_ notification: Notification) { exit(1) }       // closed without Play: the game does not start
+    func applicationWillTerminate(_ notification: Notification) { exit(args.contains("--live") ? 0 : 1) }       // closed without Play: the game does not start
     func applicationWillFinishLaunching(_ notification: Notification) { NSApp.setActivationPolicy(.regular) }      // a bare helper process is not a foreground app by default
     func applicationDidFinishLaunching(_ notification: Notification) { NSApp.activate(ignoringOtherApps: true) }
 }
@@ -374,7 +386,7 @@ case "selftest":      // load the settings, change some, save, and print the fil
 case "status":
     print("local: \(Store.local.path); iCloud: \(Store.cloudAvailable && Prefs.icloudOn ? Store.cloud.path : "off/unavailable")"); exit(0)
 default:
-    let force = args.contains("--settings")
+    let force = args.contains("--settings") || args.contains("--live")
     if args.contains("--auto") && !force && !Prefs.showAtLaunch && !NSEvent.modifierFlags.contains(.option) { exit(0) }
     let app = NSApplication.shared
     let delegate = AppDelegate()
@@ -383,7 +395,7 @@ default:
     let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 740), styleMask: [.titled, .closable, .miniaturizable, .resizable],
                        backing: .buffered, defer: false)
     win.title = "SSX Tricky Settings"
-    win.contentView = NSHostingView(rootView: SettingsView(play: { exit(0) }))
+    win.contentView = NSHostingView(rootView: SettingsView(play: { exit(0) }, live: args.contains("--live")))
     win.minSize = NSSize(width: 540, height: 640)
     win.center()
     win.isReleasedWhenClosed = false

@@ -16,6 +16,17 @@ python3 "$HERE/make_resources.py" >/dev/null
 cp -R "$ROOT/port/assets" "$APP/Contents/Resources/assets"
 swiftc -O -swift-version 5 "$HERE/ot-tool.swift" -o "$APP/Contents/Resources/ot-tool" 2>&1 | grep -E "error" || true
 [ -x "$APP/Contents/Resources/ot-tool" ] || echo "(settings window not built: swiftc failed; the app still starts the game)"
+# app icon: drawn by make_icon.swift, packed into AppIcon.icns
+ICONS="$(mktemp -d)"
+if swiftc -O "$HERE/make_icon.swift" -o "$ICONS/make_icon" 2>/dev/null && "$ICONS/make_icon" "$ICONS/icon.png"; then
+    mkdir "$ICONS/AppIcon.iconset"
+    for sz in 16 32 128 256 512; do
+        sips -z $sz $sz "$ICONS/icon.png" --out "$ICONS/AppIcon.iconset/icon_${sz}x${sz}.png" >/dev/null
+        sips -z $((sz*2)) $((sz*2)) "$ICONS/icon.png" --out "$ICONS/AppIcon.iconset/icon_${sz}x${sz}@2x.png" >/dev/null
+    done
+    iconutil -c icns "$ICONS/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns" || echo "(icon not packed)"
+else echo "(icon not drawn: swiftc failed)"; fi
+rm -rf "$ICONS"
 cp "$HERE/ssx-launcher.sh" "$APP/Contents/MacOS/SSX Tricky"
 chmod +x "$APP/Contents/MacOS/SSX Tricky" "$APP/Contents/Resources/ssx-tricky-bin"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -26,6 +37,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>SSX Tricky</string>
   <key>CFBundleIdentifier</key><string>local.opentricky.macos</string>
   <key>CFBundleExecutable</key><string>SSX Tricky</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.3-dev</string>
   <key>CFBundleVersion</key><string>1</string>

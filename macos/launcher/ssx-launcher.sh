@@ -90,6 +90,7 @@ load_env() {
 }
 [ -f "$SUPPORT/display.env" ] && load_env "$SUPPORT/display.env"
 
+[ -n "$TOOL" ] && export OT_TOOL="$TOOL"             # the game opens the settings window with it (Cmd+, or F2)
 export OT_ASSET_DIR="$HERE/../Resources/assets"      # the button pictures and the HD index (resources.txt lists them)
 cd "$SUPPORT" || exit 1
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"

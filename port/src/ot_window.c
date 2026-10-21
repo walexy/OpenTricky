@@ -10,6 +10,9 @@
 #include <pthread.h>
 #if !defined(_WIN32)
 #include <unistd.h>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
 #endif
 #include <time.h>
 #include <sys/stat.h>
@@ -293,6 +296,46 @@ static void save_ppm(SDL_Renderer *r, const char *path)
     SDL_DestroySurface(s);
 }
 
+#if !defined(_WIN32)
+/* Window size on the keyboard. Cmd+1..4 = 540 / 720 / 900 / 1080 high, F9 smaller, F10 larger (each leaves full screen first); the width
+ * keeps the shape the window was opened with. OT_WINDOW_H sets the height it opens at. */
+static double s_win_aspect = 4.0 / 3.0;
+static void window_height(SDL_Window *win, int h)
+{
+    SDL_Rect usable; int w;
+    if (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) { SDL_SetWindowFullscreen(win, false); SDL_SyncWindow(win); }
+    if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(win), &usable)) {      /* never larger than the screen's usable area */
+        if (h > usable.h - 60) h = usable.h - 60;
+        if ((int)(h * s_win_aspect) > usable.w) h = (int)(usable.w / s_win_aspect);
+    }
+    if (h < 360) h = 360;
+    w = (int)(h * s_win_aspect + 0.5);
+    SDL_SetWindowSize(win, w, h);
+    SDL_SyncWindow(win);
+    SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    fprintf(stderr, "[WINDOW] size %dx%d\n", w, h);
+}
+static void window_step(SDL_Window *win, double f)
+{
+    int w = 0, h = 0;
+    if (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) { SDL_SetWindowFullscreen(win, false); SDL_SyncWindow(win); }
+    SDL_GetWindowSize(win, &w, &h);
+    window_height(win, (int)(h * f + 0.5));
+}
+/* The settings window (OT_TOOL, set by the app's launcher): Cmd+, or F2. One at a time. */
+static pid_t s_settings_pid;
+static void open_settings(SDL_Window *win)
+{
+    const char *tool = getenv("OT_TOOL");
+    char *argv[] = { (char *)tool, (char *)"gui", (char *)"--live", NULL };
+    if (!tool || !tool[0]) { fprintf(stderr, "[WINDOW] settings window: only in the SSX Tricky app (OT_TOOL is not set)\n"); return; }
+    if (s_settings_pid > 0 && waitpid(s_settings_pid, NULL, WNOHANG) == 0) return;      /* still open */
+    s_settings_pid = 0;
+    if (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) { SDL_SetWindowFullscreen(win, false); SDL_SyncWindow(win); }
+    if (posix_spawn(&s_settings_pid, tool, NULL, NULL, argv, environ) != 0) { s_settings_pid = 0; fprintf(stderr, "[WINDOW] could not start %s\n", tool); }
+}
+#endif
+
 int ot_window_run(int (*guest)(void *), void *arg)
 {
     guest_t g = { guest, arg, 0, 0 };
@@ -317,6 +360,12 @@ int ot_window_run(int (*guest)(void *), void *arg)
         double shape = choose_display();
         int ww = 1200, wh = 900;
         if (shape > 1.0) { wh = 900; ww = (int)(900.0 * shape + 0.5); if (ww > 2400) { ww = 2400; wh = (int)(2400.0 / shape + 0.5); } }
+        {   const char *oh = getenv("OT_WINDOW_H"); int h = oh ? atoi(oh) : 0;      /* the height the window opens at: 360 .. 2160 */
+            if (h >= 360 && h <= 2160) { ww = (int)((double)ww * h / wh + 0.5); wh = h; }
+        }
+#if !defined(_WIN32)
+        s_win_aspect = (double)ww / (double)wh;
+#endif
         win = SDL_CreateWindow("SSX Tricky (OpenTricky, macOS)", ww, wh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
         if (win && (getenv("XBOX_FULLSCREEN") ? getenv("XBOX_FULLSCREEN")[0] == '1' : getenv("OT_FULLSCREEN") && getenv("OT_FULLSCREEN")[0] == '1'))
             SDL_SetWindowFullscreen(win, true);
@@ -390,6 +439,18 @@ int ot_window_run(int (*guest)(void *), void *arg)
                      (ev.key.key == SDLK_F11 || (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
                 { bool on = !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN); SDL_SetWindowFullscreen(win, on); fprintf(stderr, "[WINDOW] fullscreen %s\n", on ? "on" : "off"); }
             else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F12) screenshot_request();
+#if !defined(_WIN32)
+            else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F9) window_step(win, 0.8);
+            else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F10) window_step(win, 1.25);
+            else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && ev.key.key == SDLK_F2) open_settings(win);
+            else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && (ev.key.mod & SDL_KMOD_GUI)) {
+                if (ev.key.key == SDLK_COMMA) open_settings(win);
+                else if (ev.key.key == SDLK_1) window_height(win, 540);
+                else if (ev.key.key == SDLK_2) window_height(win, 720);
+                else if (ev.key.key == SDLK_3) window_height(win, 900);
+                else if (ev.key.key == SDLK_4) window_height(win, 1080);
+            }
+#endif
             else if (ev.type == SDL_EVENT_GAMEPAD_ADDED) pad_open_all();
             else if (ev.type == SDL_EVENT_GAMEPAD_REMOVED) {
                 int k;
