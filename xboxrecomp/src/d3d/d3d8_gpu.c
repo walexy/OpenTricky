@@ -42,8 +42,11 @@ typedef struct Tex Tex;
 static int g_failed;
 static int g_rt_cleared;      /* has the target been cleared at least once (first frame starts black) */
 
+extern int nv2a_psh_msl;
+
 int d3d8_gpu_attach(void *device, void *window)
 {
+    nv2a_psh_msl = 1;               /* the translator's combiner generator emits MSL for this backend */
     g_dev = (SDL_GPUDevice *)device;
     g_win = (SDL_Window *)window;
     return g_dev && g_win;
@@ -136,6 +139,7 @@ int d3d8_WindowClipOn(void) { return g_wclip_on; }
 /* ================================================================= */
 
 typedef struct {
+    uint64_t ps;                                  /* nv2a_psh_key of the combiner shader, 0 = the plain vertex-colour one */
     uint8_t blend_en, src, dst, op, cwrite;
     uint8_t z_en, z_wr, z_func;
     uint8_t st_en, st_func, st_rmask, st_wmask, st_fail, st_zfail, st_pass;
@@ -188,6 +192,9 @@ static SDL_GPUStencilOp stencil_o(DWORD o)
     }
 }
 
+static SDL_GPUShader *psh_shader(uint64_t key);
+static int pipeline_has_psh(const PKey *k);
+
 static SDL_GPUGraphicsPipeline *pipeline_for(const PKey *k)
 {
     SDL_GPUGraphicsPipelineCreateInfo pi;
@@ -219,7 +226,8 @@ cache_full:
             at[i].format = (i == 3) ? SDL_GPU_VERTEXELEMENTFORMAT_FLOAT : SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
         }
     }
-    pi.vertex_shader = g_vs; pi.fragment_shader = g_fs;
+    pi.vertex_shader = g_vs; pi.fragment_shader = k->ps ? psh_shader(k->ps) : g_fs;
+    if (!pi.fragment_shader) pi.fragment_shader = g_fs;
     pi.vertex_input_state.vertex_buffer_descriptions = &vb; pi.vertex_input_state.num_vertex_buffers = 1;
     pi.vertex_input_state.vertex_attributes = at; pi.vertex_input_state.num_vertex_attributes = 8;
     switch (k->prim) {
@@ -296,8 +304,10 @@ typedef struct {
     int scissor_on; long sc[4];
     float atest[4];
     float tx[4];
-    Tex *tex;                              /* stage 0 texture (a reference is held until the frame is presented) */
-    SKey skey;
+    Tex *tex[4];                           /* bound textures (a reference is held until the frame is presented) */
+    SKey skey[4];
+    int psh;                               /* 1: a combiner shader, `pc` holds its constants */
+    float pc[sizeof(Nv2aPshConsts) / 4];
     uint32_t stencil_ref;
     /* clear */
     DWORD flags; float color[4]; float z; DWORD stencil; unsigned x0, y0, x1, y1;
@@ -355,7 +365,7 @@ static void fill_alpha_test(Op *o)
 
 static void capture_tex(Op *o, const Nv2aPshConsts *pc);
 static void record_draw(int prim, uint32_t nverts, const void *v, uint32_t stride, int ffp, int raster, int use_raster,
-                        const Nv2aPshConsts *pc)
+                        const Nv2aPshConsts *pc, uint64_t ps_key)
 {
     Op *o; uint32_t first;
     if (!nverts || !g_ops) return;
@@ -365,6 +375,7 @@ static void record_draw(int prim, uint32_t nverts, const void *v, uint32_t strid
     o = op_new(OP_DRAW);
     if (!o) return;
     key_from_state(&o->key, prim, raster, use_raster);
+    if (pc && ps_key) { o->key.ps = ps_key; o->psh = 1; memcpy(o->pc, pc, sizeof o->pc); }
     o->first = first; o->count = nverts;
     o->scissor_on = g_wclip_on; memcpy(o->sc, g_wclip, sizeof o->sc);
     fill_alpha_test(o);
@@ -387,9 +398,8 @@ static uint32_t prim_verts(int prim, uint32_t pc)
 HRESULT d3d8_nv2a_draw(D3DPRIMITIVETYPE prim, UINT prim_count, const void *verts, UINT stride,
                        unsigned long long ps_key, const void *ps_consts, UINT ps_consts_size, int raster)
 {
-    (void)ps_key;
     record_draw((int)prim, prim_verts((int)prim, prim_count), verts, stride, 0, raster, 1,
-                ps_consts_size >= sizeof(Nv2aPshConsts) ? (const Nv2aPshConsts *)ps_consts : NULL);
+                ps_consts_size >= sizeof(Nv2aPshConsts) ? (const Nv2aPshConsts *)ps_consts : NULL, ps_key);
     return 0;
 }
 
@@ -495,7 +505,7 @@ static void upload_arena(SDL_GPUCommandBuffer *cmd)
 
 static void frame_release_textures(void);
 static void upload_textures(SDL_GPUCommandBuffer *cmd);
-static int  bind_stage0(SDL_GPURenderPass *pass, const Op *o);
+static int  bind_samplers(SDL_GPURenderPass *pass, const Op *o);
 
 static void replay_ops(SDL_GPUCommandBuffer *cmd)
 {
@@ -520,7 +530,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
                 memset(&k, 0, sizeof k); k.cwrite = 0xF; k.src = D3DBLEND_ONE; k.dst = D3DBLEND_ZERO; k.op = 1;
                 k.z_func = D3DCMP_ALWAYS; k.st_func = D3DCMP_ALWAYS; k.prim = D3DPT_TRIANGLELIST;
                 p = pipeline_for(&k);
-                if (p && g_vbuf && bind_stage0(pass, o)) {
+                if (p && g_vbuf && bind_samplers(pass, o)) {
                     SDL_BindGPUGraphicsPipeline(pass, p);
                     SDL_SetGPUScissor(pass, &all);
                     SDL_PushGPUVertexUniformData(cmd, 0, screen, sizeof screen);
@@ -537,7 +547,7 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             SDL_GPUGraphicsPipeline *p = pipeline_for(&o->key);
             SDL_GPUBufferBinding bb;
             float screen[4] = { TITLE_W, TITLE_H, 0, 0 };
-            if (!p || !g_vbuf || !bind_stage0(pass, o)) continue;
+            if (!p || !g_vbuf || !bind_samplers(pass, o)) continue;
             SDL_BindGPUGraphicsPipeline(pass, p);
             if (o->scissor_on) {
                 SDL_Rect r; r.x = (int)o->sc[0]; r.y = (int)o->sc[1]; r.w = (int)(o->sc[2] - o->sc[0] + 1); r.h = (int)(o->sc[3] - o->sc[1] + 1);
@@ -549,7 +559,8 @@ static void replay_ops(SDL_GPUCommandBuffer *cmd)
             }
             SDL_SetGPUStencilReference(pass, (Uint8)o->stencil_ref);
             SDL_PushGPUVertexUniformData(cmd, 0, screen, sizeof screen);
-            SDL_PushGPUFragmentUniformData(cmd, 0, o->atest, 2 * sizeof o->atest);   /* atest + tx */
+            if (o->psh && pipeline_has_psh(&o->key)) SDL_PushGPUFragmentUniformData(cmd, 0, o->pc, sizeof o->pc);
+            else SDL_PushGPUFragmentUniformData(cmd, 0, o->atest, 2 * sizeof o->atest);   /* atest + tx */
             bb.buffer = g_vbuf; bb.offset = o->first * 116u;
             SDL_BindGPUVertexBuffers(pass, 0, &bb, 1);
             SDL_DrawGPUPrimitives(pass, o->count, 1, 0, 0);
@@ -901,36 +912,46 @@ static Tex *g_ftex[MAX_FTEX];               /* textures the frame's ops refer to
 static uint32_t g_nftex, g_frame_id = 1;
 static SDL_GPUTexture *g_white;             /* 1x1 white: bound when a draw has no texture */
 
+static void skey_from_tss(SKey *k, int st)
+{
+    const DWORD *ts = g_tss[st]; float bias;
+    memset(k, 0, sizeof *k);
+    memcpy(&bias, &ts[D3DTSS_MIPMAPLODBIAS], 4);
+    k->min = (uint8_t)ts[D3DTSS_MINFILTER]; k->mag = (uint8_t)ts[D3DTSS_MAGFILTER]; k->mip = (uint8_t)ts[D3DTSS_MIPFILTER];
+    k->au = (uint8_t)ts[D3DTSS_ADDRESSU]; k->av = (uint8_t)ts[D3DTSS_ADDRESSV];
+    k->maxmip = (uint8_t)(ts[D3DTSS_MAXMIPLEVEL] > 15 ? 15 : ts[D3DTSS_MAXMIPLEVEL]);
+    k->aniso = (uint8_t)(ts[D3DTSS_MAXANISOTROPY] > 16 ? 16 : ts[D3DTSS_MAXANISOTROPY]);
+    k->bias = (bias == bias && bias > -16.0f && bias < 16.0f) ? bias : 0.0f;     /* NaN / absurd -> 0 */
+}
+
 static void capture_tex(Op *o, const Nv2aPshConsts *pc)
 {
-    Tex *t = (Tex *)g_bound[0];
+    int st, last = o->psh ? 3 : 0;
     o->tx[1] = o->tx[2] = 1.0f;
-    if (!t) return;
-    if (t->stamp != g_frame_id) {
-        if (g_nftex >= MAX_FTEX) return;
-        g_ftex[g_nftex++] = t; t->stamp = g_frame_id;
-    }
-    t->ref++;
-    o->tex = t; o->tx[0] = 1.0f;
-    if (pc && pc->tex_size[0][2] > 0.5f) {       /* linear image: the vertex gives texel units */
-        float w = pc->tex_size[0][0] > 0 ? pc->tex_size[0][0] : (float)t->w, h = pc->tex_size[0][1] > 0 ? pc->tex_size[0][1] : (float)t->h;
-        o->tx[1] = 1.0f / w; o->tx[2] = 1.0f / h;
-    }
-    {
-        const DWORD *ts = g_tss[0]; float bias;
-        memcpy(&bias, &ts[D3DTSS_MIPMAPLODBIAS], 4);
-        o->skey.min = (uint8_t)ts[D3DTSS_MINFILTER]; o->skey.mag = (uint8_t)ts[D3DTSS_MAGFILTER]; o->skey.mip = (uint8_t)ts[D3DTSS_MIPFILTER];
-        o->skey.au = (uint8_t)ts[D3DTSS_ADDRESSU]; o->skey.av = (uint8_t)ts[D3DTSS_ADDRESSV];
-        o->skey.maxmip = (uint8_t)(ts[D3DTSS_MAXMIPLEVEL] > 15 ? 15 : ts[D3DTSS_MAXMIPLEVEL]);
-        o->skey.aniso = (uint8_t)(ts[D3DTSS_MAXANISOTROPY] > 16 ? 16 : ts[D3DTSS_MAXANISOTROPY]);
-        o->skey.bias = (bias == bias && bias > -16.0f && bias < 16.0f) ? bias : 0.0f;     /* NaN / absurd -> 0 */
+    for (st = 0; st <= last; st++) {
+        Tex *t = (Tex *)g_bound[st];
+        skey_from_tss(&o->skey[st], st);
+        if (!t) continue;
+        if (t->stamp != g_frame_id) {
+            if (g_nftex >= MAX_FTEX) continue;
+            g_ftex[g_nftex++] = t; t->stamp = g_frame_id;
+        }
+        t->ref++;
+        o->tex[st] = t;
+        if (st == 0) {
+            o->tx[0] = 1.0f;
+            if (!o->psh && pc && pc->tex_size[0][2] > 0.5f) {   /* linear image, plain shader: texel units */
+                o->tx[1] = 1.0f / (pc->tex_size[0][0] > 0 ? pc->tex_size[0][0] : (float)t->w);
+                o->tx[2] = 1.0f / (pc->tex_size[0][1] > 0 ? pc->tex_size[0][1] : (float)t->h);
+            }
+        }
     }
 }
 
 static void frame_release_textures(void)
 {
     uint32_t i;
-    for (i = 0; i < g_nops; i++) if (g_ops[i].tex) { tex_release((IDirect3DTexture8 *)g_ops[i].tex); g_ops[i].tex = NULL; }
+    for (i = 0; i < g_nops; i++) { int st; for (st = 0; st < 4; st++) if (g_ops[i].tex[st]) { tex_release((IDirect3DTexture8 *)g_ops[i].tex[st]); g_ops[i].tex[st] = NULL; } }
     g_nftex = 0; g_frame_id++;
 }
 
@@ -1025,13 +1046,56 @@ static void upload_textures(SDL_GPUCommandBuffer *cmd)
     if (cp) SDL_EndGPUCopyPass(cp);
 }
 
-static int bind_stage0(SDL_GPURenderPass *pass, const Op *o)
+static int bind_samplers(SDL_GPURenderPass *pass, const Op *o)
 {
-    SDL_GPUTextureSamplerBinding b;
-    b.texture = (o->tex && o->tex->gpu) ? o->tex->gpu : g_white;
-    b.sampler = sampler_for(&o->skey);
-    if (!b.texture || !b.sampler) return 0;
-    SDL_BindGPUFragmentSamplers(pass, 0, &b, 1);
+    SDL_GPUTextureSamplerBinding b[4]; int st, n = (o->psh && o->key.ps && psh_shader(o->key.ps)) ? 4 : 1;
+    for (st = 0; st < n; st++) {
+        b[st].texture = (o->tex[st] && o->tex[st]->gpu) ? o->tex[st]->gpu : g_white;
+        b[st].sampler = sampler_for(&o->skey[st]);
+        if (!b[st].texture || !b[st].sampler) return 0;
+    }
+    SDL_BindGPUFragmentSamplers(pass, 0, b, (Uint32)n);
+    return 1;
+}
+
+/* ---- combiner shaders: the translator hands over generated MSL per state key ---------------------------------- */
+
+typedef struct { uint64_t key; SDL_GPUShader *s; int used; } PshEnt;
+#define PSH_SLOTS 16384
+static PshEnt *g_psh; static unsigned g_npsh, g_psh_fail;
+
+static PshEnt *psh_find(uint64_t key, int insert)
+{
+    unsigned h = (unsigned)(key ^ (key >> 29)) & (PSH_SLOTS - 1), n;
+    if (!g_psh) { g_psh = (PshEnt *)calloc(PSH_SLOTS, sizeof *g_psh); if (!g_psh) return NULL; }
+    for (n = 0; n < PSH_SLOTS; n++, h = (h + 1) & (PSH_SLOTS - 1)) {
+        if (g_psh[h].used && g_psh[h].key == key) return &g_psh[h];
+        if (!g_psh[h].used) { if (!insert) return NULL; g_psh[h].used = 1; g_psh[h].key = key; return &g_psh[h]; }
+    }
+    return NULL;
+}
+static SDL_GPUShader *psh_shader(uint64_t key) { PshEnt *e = psh_find(key, 0); return e ? e->s : NULL; }
+static int pipeline_has_psh(const PKey *k) { return k->ps && psh_shader(k->ps) != NULL; }
+
+int d3d8_nv2a_has_ps(unsigned long long key) { return key == 0 || psh_find(key, 0) != NULL; }
+int d3d8_nv2a_add_ps(unsigned long long key, const char *msl, int len)
+{
+    PshEnt *e = psh_find(key, 1);
+    SDL_GPUShaderCreateInfo ci;
+    if (!e) return 0;
+    if (!g_dev) return 1;
+    memset(&ci, 0, sizeof ci);
+    ci.code = (const Uint8 *)msl; ci.code_size = (size_t)len + 1;
+    ci.entrypoint = "fs_psh"; ci.format = SDL_GPU_SHADERFORMAT_MSL; ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    ci.num_uniform_buffers = 1; ci.num_samplers = 4;
+    e->s = SDL_CreateGPUShader(g_dev, &ci);
+    g_npsh++;
+    if (!e->s) {                       /* the draw falls back to the plain vertex-colour shader */
+        if (g_psh_fail++ < 4) {
+            fprintf(stderr, "[GPU] combiner shader %016llX failed: %s\n", key, SDL_GetError());
+            if (getenv("OT_GPU_PSH_DUMP_FAILED")) fprintf(stderr, "----\n%.*s\n----\n", len, msl);
+        }
+    }
     return 1;
 }
 
@@ -1048,7 +1112,7 @@ static HRESULT __stdcall dev_drawup(IDirect3DDevice8 *s, D3DPRIMITIVETYPE prim, 
 {
     (void)s;
     /* fixed-function pre-transformed vertices (XYZRHW | DIFFUSE | TEX1): x y z rhw, colour, u v */
-    record_draw((int)prim, prim_verts((int)prim, pc), v, stride, 1, 0, 0, NULL);
+    record_draw((int)prim, prim_verts((int)prim, pc), v, stride, 1, 0, 0, NULL, 0);
     return 0;
 }
 static HRESULT __stdcall dev_clear(IDirect3DDevice8 *s, DWORD n, const D3DRECT *r, DWORD fl, D3DCOLOR c, float z, DWORD st)
@@ -1128,8 +1192,6 @@ int d3d8_SoftShadowDraw(float shade, unsigned cmp, unsigned ref, unsigned rmask,
 int  d3d8_pump_cache_on(void) { return 0; }
 
 /* pixel shaders: Slice 3. The translator generates the combiner source; the default colour shader stands in for all of it. */
-int d3d8_nv2a_has_ps(unsigned long long key) { (void)key; return 1; }
-int d3d8_nv2a_add_ps(unsigned long long key, const char *hlsl, int len) { (void)key; (void)hlsl; (void)len; return 1; }
 /* vertex programs run on the CPU (no GPU vertex-program path) */
 int  d3d8_nv2a_vsh_ready(const void *d) { (void)d; return 0; }
 int  d3d8_nv2a_draw_program_gpu(const void *d) { (void)d; return 0; }
