@@ -602,13 +602,16 @@ int xa2_init(void)
         if (!(e && !strcmp(e, "null")) && SDL_InitSubSystem(SDL_INIT_AUDIO)) {
             SDL_AudioSpec spec; SDL_zero(spec);
             spec.format = SDL_AUDIO_S16; spec.channels = 2; spec.freq = (int)NULL_SAMPLE_RATE;
-            s_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
-            if (s_stream && SDL_ResumeAudioStreamDevice(s_stream)) {
+            SDL_AudioStream *st = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+            if (st && SDL_ResumeAudioStreamDevice(st)) {
+                pthread_mutex_lock(&s_lock);       /* published under the lock the submit/queued/shutdown paths read it with */
+                s_stream = st;
+                pthread_mutex_unlock(&s_lock);
                 fprintf(stderr, "[XA2] SDL3 audio: 48000 Hz stereo, driver %s\n", SDL_GetCurrentAudioDriver());
                 return 1;
             }
             fprintf(stderr, "[XA2] no audio device (%s): silent sink\n", SDL_GetError());
-            if (s_stream) { SDL_DestroyAudioStream(s_stream); s_stream = NULL; }
+            if (st) SDL_DestroyAudioStream(st);
             SDL_QuitSubSystem(SDL_INIT_AUDIO);
         }
     }
@@ -622,7 +625,7 @@ void xa2_shutdown(void)
     pthread_mutex_lock(&s_lock);
     s_active = 0;
 #if defined(OT_SDL_AUDIO)
-    if (s_stream) { SDL_DestroyAudioStream(s_stream); s_stream = NULL; SDL_QuitSubSystem(SDL_INIT_AUDIO); }
+    if (s_stream) { SDL_AudioStream *st = s_stream; s_stream = NULL; SDL_DestroyAudioStream(st); SDL_QuitSubSystem(SDL_INIT_AUDIO); }
 #endif
     pthread_mutex_unlock(&s_lock);
     fprintf(stderr, "[XA2] Shut down (%d buffers written, %lu underruns, %lu dropped)\n",

@@ -157,8 +157,8 @@ static void stage_code(Ps *ps, const In *in, const Out *o, int is_alpha, SB *cod
     get_input_var(ps, in[1], is_alpha, b, sizeof b);
     get_input_var(ps, in[2], is_alpha, c, sizeof c);
     get_input_var(ps, in[3], is_alpha, d, sizeof d);
-    snprintf(ab, sizeof ab, o->ab_op ? "dot(%s, %s)" : "(%s * %s)", a, b);
-    snprintf(cd, sizeof cd, o->cd_op ? "dot(%s, %s)" : "(%s * %s)", c, d);
+    snprintf(ab, sizeof ab, o->ab_op && !is_alpha ? "dot(%s, %s)" : "(%s * %s)", a, b);
+    snprintf(cd, sizeof cd, o->cd_op && !is_alpha ? "dot(%s, %s)" : "(%s * %s)", c, d);
     get_output(ab, o->mapping, abm, sizeof abm);
     get_output(cd, o->mapping, cdm, sizeof cdm);
     get_var(ps, o->ab, 1, abd, sizeof abd);
@@ -279,7 +279,11 @@ static void subst(char *buf, int cap, const char *from, const char *to)
     char *p = buf;
     while ((p = strstr(p, from)) != NULL) {
         int len = (int)strlen(p);
-        if ((int)(p - buf) + len - fl + tl >= cap) return;
+        if ((int)(p - buf) + len - fl + tl >= cap) {
+            static int told;      /* the rest keeps its HLSL spelling: the shader will not compile, which is then reported */
+            if (!told) { told = 1; fprintf(stderr, "[PSH] subst: '%s' does not fit the shader buffer\n", from); }
+            return;
+        }
         memmove(p + tl, p + fl, (size_t)(len - fl + 1));
         memcpy(p, to, (size_t)tl);
         p += tl;

@@ -251,10 +251,11 @@ bool ot_mmio_trap(void *native, size_t size, const char *name,
         s_page[s_npage].shadow = sh;
         s_npage++;
     }
-    for (int i = first_new; i < s_npage; i++)
-        if (mprotect((void *)s_page[i].base, s_pagesz, PROT_NONE) != 0) goto rollback;
-
+    /* the window is registered before its pages are protected: a fault the instant mprotect lands must find it */
+    if (s_nwin >= (int)(sizeof s_win / sizeof s_win[0])) goto rollback;
     s_win[s_nwin++] = (window_t){ lo, hi, read, write, user, name };
+    for (int i = first_new; i < s_npage; i++)
+        if (mprotect((void *)s_page[i].base, s_pagesz, PROT_NONE) != 0) { s_nwin--; goto rollback; }
     ok = true;
     goto out;
 

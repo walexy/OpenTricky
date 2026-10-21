@@ -1129,6 +1129,7 @@ struct Tex {
     uint8_t *data[16]; UINT pitch[16]; UINT size[16];
     SDL_GPUTexture *gpu;                   /* created and filled at present */
     int dirty;                             /* the levels changed since the last upload */
+    int gpu_failed;                        /* the device refused this texture: not retried (or logged) every frame */
     uint32_t stamp;                        /* frame that last listed this texture in g_ftex */
 };
 
@@ -1292,18 +1293,19 @@ static void upload_textures(SDL_GPUCommandBuffer *cmd)
         Tex *t = g_ftex[i];
         SDL_GPUTransferBufferCreateInfo bi; SDL_GPUTransferBuffer *tb; uint8_t *map; UINT l; uint32_t total = 0, off = 0;
         if (t->gpu && !t->dirty) continue;
+        if (!t->gpu && t->gpu_failed) continue;
         if (!t->gpu) {
             SDL_GPUTextureCreateInfo ti; SDL_GPUTextureFormat f = tex_gpu_fmt(t->fmt);
             static int told;
             if (!SDL_GPUTextureSupportsFormat(g_dev, f, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
                 if (!told) { told = 1; fprintf(stderr, "[GPU] texture format %d (xbox %d) not supported by the device: drawn untextured\n", (int)f, (int)t->fmt); }
-                t->dirty = 0; continue;
+                t->dirty = 0; t->gpu_failed = 1; continue;
             }
             memset(&ti, 0, sizeof ti);
             ti.type = SDL_GPU_TEXTURETYPE_2D; ti.format = f; ti.width = t->w; ti.height = t->h;
             ti.layer_count_or_depth = 1; ti.num_levels = t->levels; ti.sample_count = SDL_GPU_SAMPLECOUNT_1; ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
             t->gpu = SDL_CreateGPUTexture(g_dev, &ti);
-            if (!t->gpu) { fprintf(stderr, "[GPU] texture %ux%u fmt %d failed: %s\n", t->w, t->h, (int)t->fmt, SDL_GetError()); t->dirty = 0; continue; }
+            if (!t->gpu) { fprintf(stderr, "[GPU] texture %ux%u fmt %d failed: %s\n", t->w, t->h, (int)t->fmt, SDL_GetError()); t->dirty = 0; t->gpu_failed = 1; continue; }
         }
         for (l = 0; l < t->levels; l++) total += t->size[l];
         memset(&bi, 0, sizeof bi); bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD; bi.size = total;

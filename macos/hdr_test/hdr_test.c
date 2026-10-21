@@ -87,16 +87,16 @@ int main(void)
         printf("mode %d (%s)\n", mode, mode == 0 ? "plain: linear light" : mode == 1 ? "gamut" : "gamut + warm + boost, headroom 1.2");
         for (i = 0; i < N; i++) printf("  %-11s %3d %3d %3d -> %8.4f %8.4f %8.4f\n", P[i].name, P[i].r, P[i].g, P[i].b, res[i][0], res[i][1], res[i][2]);
         if (mode == 0) {   /* sRGB 128 -> 0.2158 linear, 255 -> 1 */
-            if (fabsf(res[0][0] - 1.0f) > 0.002f || fabsf(res[1][0] - 0.2158f) > 0.002f || res[2][0] > 0.0005f) { bad++; printf("  FAIL: plain decode\n"); }
+            if (!(fabsf(res[0][0] - 1.0f) <= 0.002f) || !(fabsf(res[1][0] - 0.2158f) <= 0.002f) || !(res[2][0] <= 0.0005f)) { bad++; printf("  FAIL: plain decode\n"); }
         }
         if (mode >= 1) {
-            if (fabsf(res[0][0] - 1.0f) > 0.002f || fabsf(res[0][1] - 1.0f) > 0.002f || fabsf(res[0][2] - 1.0f) > 0.002f) { bad++; printf("  FAIL: white moved\n"); }
-            if (fabsf(res[1][0] - res[1][2]) > 0.002f) { bad++; printf("  FAIL: grey not neutral\n"); }
+            if (!(fabsf(res[0][0] - 1.0f) <= 0.002f) || !(fabsf(res[0][1] - 1.0f) <= 0.002f) || !(fabsf(res[0][2] - 1.0f) <= 0.002f)) { bad++; printf("  FAIL: white moved\n"); }
+            if (!(fabsf(res[1][0] - res[1][2]) <= 0.002f)) { bad++; printf("  FAIL: grey not neutral\n"); }
             if (!(res[3][2] < 0.0f && res[3][0] > 1.0f)) { bad++; printf("  FAIL: orange not outside sRGB (expected R > 1, B < 0)\n"); }
         }
         if (mode == 2) {
-            if (fabsf(res[0][0] - 1.0f) > 0.002f) { bad++; printf("  FAIL: white boosted\n"); }
-            if (fabsf(res[1][0] - res[1][1]) > 0.002f) { bad++; printf("  FAIL: grey changed\n"); }
+            if (!(fabsf(res[0][0] - 1.0f) <= 0.002f)) { bad++; printf("  FAIL: white boosted\n"); }
+            if (!(fabsf(res[1][0] - res[1][1]) <= 0.002f)) { bad++; printf("  FAIL: grey changed\n"); }
             if (res[3][0] > 1.0f * 1.2f * 1.5f) { bad++; printf("  FAIL: orange above the allowed headroom\n"); }
             for (i = 0; i < N; i++) {   /* every colour inside Display P3 (its coordinates >= 0), before the boost scales them */
                 float r = res[i][0], g = res[i][1], b = res[i][2];
@@ -144,7 +144,7 @@ int main(void)
             float d = fmaxf(fabsf(res[i][0] - direct[i][0]), fmaxf(fabsf(res[i][1] - direct[i][1]), fabsf(res[i][2] - direct[i][2])));
             printf("  %-11s via %7.4f %7.4f %7.4f  direct %7.4f %7.4f %7.4f  max diff %.4f\n", P[i].name, res[i][0], res[i][1], res[i][2],
                    direct[i][0], direct[i][1], direct[i][2], d);
-            if (d > 0.012f) { bad++; printf("  FAIL: scene pass does not compose to the direct result\n"); }
+            if (!(d <= 0.012f)) { bad++; printf("  FAIL: scene pass does not compose to the direct result\n"); }
         }
     }
     {   /* highlight gradations: a ramp of shades of a saturated colour, 0.6 .. 1.0 of full, through the default settings must keep
@@ -206,7 +206,7 @@ int main(void)
             for (k = 1; k < R; k++) { minstep = fminf(minstep, py[f][k] - py[f][k - 1]); basestep = fminf(basestep, base[f][k] - base[f][k - 1]); }
             printf("  family %d: top %.3f -> %.3f   smallest step %.4f (plain %.4f)\n", f, base[f][R - 1], py[f][R - 1], minstep, basestep);
             if (!(minstep > 0.0f)) { bad++; printf("  FAIL: two shades merged\n"); }
-            if (minstep < 0.30f * basestep) { bad++; printf("  FAIL: highlight steps squeezed below 30%% of the plain ones\n"); }
+            if (!(minstep >= 0.30f * basestep)) { bad++; printf("  FAIL: highlight steps squeezed below 30%% of the plain ones\n"); }
         }
     }
     {   /* the headroom clamp the game applies (d3d8_gpu.c hdr_params uses this function) */
@@ -216,7 +216,7 @@ int main(void)
         int c;
         for (c = 0; c < (int)(sizeof cases / sizeof cases[0]); c++) {
             float g = gpu_out_effective_headroom(cases[c][0], cases[c][1]);
-            if (fabsf(g - cases[c][2]) > 1e-6f) { bad++; printf("  FAIL: headroom(reported %.2f, peak %.2f) = %.3f, expected %.3f\n", cases[c][0], cases[c][1], g, cases[c][2]); }
+            if (!(fabsf(g - cases[c][2]) <= 1e-6f)) { bad++; printf("  FAIL: headroom(reported %.2f, peak %.2f) = %.3f, expected %.3f\n", cases[c][0], cases[c][1], g, cases[c][2]); }
         }
         if (gpu_out_effective_headroom(NAN, 1.5f) != 1.0f || gpu_out_effective_headroom(2.0f, NAN) != 1.0f) { bad++; printf("  FAIL: NaN headroom or peak\n"); }
         printf("headroom clamp: %d cases checked\n", (int)(sizeof cases / sizeof cases[0]) + 2);
