@@ -1712,8 +1712,8 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
             static int told;
             if (told++ < 6) {
                 int k;
-                fprintf(stderr, "[GPU] draw dropped: vertex array %d at %p (%u bytes) is not readable; inputs 0x%04X, %u indices; attributes:",
-                        g, (const void *)grp[g].base, (unsigned)grp[g].size, (unsigned)d->inputs, (unsigned)d->nindices);
+                fprintf(stderr, "[GPU] draw dropped: vertex array %d at %p (%u bytes) is not readable; inputs 0x%04X, %u indices; guest window %p..%p; attributes:",
+                        g, (const void *)grp[g].base, (unsigned)grp[g].size, (unsigned)d->inputs, (unsigned)d->nindices, (const void *)d->mem_lo, (const void *)d->mem_hi);
                 for (k = 0; k < 16; k++)
                     if (d->inputs & (1u << k)) fprintf(stderr, " [%d kind %u base %p stride %u bytes %u]", k, (unsigned)d->attr[k].kind, (const void *)d->attr[k].base,
                                                        (unsigned)d->attr[k].stride, (unsigned)d->attr[k].bytes);

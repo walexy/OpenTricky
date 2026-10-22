@@ -1954,9 +1954,23 @@ static void va_fetch4(int attr, uint32_t idx, float o[4])
     p = va_ptr(g_pg.vattr[attr].offset + idx * stride, 16);
     if (!p)
         return;
+    if ((uintptr_t)p < 0x100000000ull) {       /* not guest memory: see va_ptr (never seen to happen; reported if it does) */
+        static int told;
+        if (told++ < 6)
+            fprintf(stderr, "[PGRAPH] va_fetch4: attribute %d pointer %p (offset 0x%08X idx %u stride %u, memory base %p)\n", attr, (const void *)p,
+                    g_pg.vattr[attr].offset, idx, stride, (const void *)g_pg_mem_base);
+        return;
+    }
     if (g_plag.patch && stride == 0) {  /* XBOX_PUMPLAG: the block as the title drew the part */
         uint32_t off = (g_pg.vattr[attr].offset & 0x0FFFFFFFu) - (g_plag.cb & 0x0FFFFFFFu);
-        if (off + 16u <= 0xE0u) p = g_plag.patch + off;
+        if (off + 16u <= 0xE0u) {
+            p = g_plag.patch + off;
+            if ((uintptr_t)p < 0x100000000ull) {
+                static int told2;
+                if (told2++ < 6) fprintf(stderr, "[PGRAPH] va_fetch4: pump-lag patch pointer %p (snap %p, off %u): not used\n", (const void *)p, (const void *)g_plag.patch, off);
+                return;
+            }
+        }
     }
     switch (type) {
     case NV2A_VA_TYPE_F:
