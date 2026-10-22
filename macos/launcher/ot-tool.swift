@@ -13,6 +13,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import CoreAudio
 
 // MARK: - locations
 
@@ -303,6 +304,29 @@ enum Prefs {
     }
 }
 
+// MARK: - audio outputs
+
+enum AudioOutputs {
+    /// names of the output devices (CoreAudio), for the "Audio output" picker; SDL uses the same names
+    static func names() -> [String] {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { return [] }
+        var out: [String] = []
+        for id in ids {
+            var o = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: kAudioDevicePropertyScopeOutput, mElement: kAudioObjectPropertyElementMain)
+            var sz: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(id, &o, 0, nil, &sz) == noErr, sz > 0 else { continue }       // no output streams: an input-only device
+            var n = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            var cf: Unmanaged<CFString>?; var nsz = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            if AudioObjectGetPropertyData(id, &n, 0, nil, &nsz, &cf) == noErr, let c = cf { out.append(c.takeRetainedValue() as String) }
+        }
+        return out
+    }
+}
+
 // MARK: - diagnostics
 
 enum Diagnostics {
@@ -339,6 +363,7 @@ final class Model: ObservableObject {
     @Published var upscale = ""
     @Published var aniso = ""
     @Published var rumble = true
+    @Published var audioDevice = ""
     @Published var keyBind: [String: String] = [:]      // settings.ini [Keyboard]
     @Published var padBind: [String: String] = [:]      // settings.ini [Controller]
     @Published var renderH = ""
@@ -390,6 +415,7 @@ final class Model: ObservableObject {
         renderH = kv.get("OT_RENDER_H") ?? ""
         windowH = kv.get("OT_WINDOW_H") ?? ""; if windowH == "900" { windowH = "" }
         rumble = kv.get("OT_RUMBLE") != "0"
+        audioDevice = kv.get("OT_AUDIO_DEVICE") ?? ""
         let ini = Ini(url: Store.iniFile)
         for r in Bindings.keyRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2; padBind[r.0] = ini.get("Controller", r.0) ?? r.3 }
         for r in Bindings.stickRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2 }
@@ -424,6 +450,7 @@ final class Model: ObservableObject {
         k.set("OT_UPSCALE", upscale.isEmpty ? nil : upscale)
         k.set("OT_ANISO", aniso.isEmpty ? nil : aniso)
         k.set("OT_RUMBLE", rumble ? nil : "0")
+        k.set("OT_AUDIO_DEVICE", audioDevice.isEmpty ? nil : audioDevice)
         k.set("OT_FULLSCREEN", fullscreen ? "1" : nil)
         k.set("OT_FPS", fps.isEmpty ? nil : fps)
         k.set("OT_VSYNC", vsync.isEmpty ? nil : vsync)
@@ -503,6 +530,11 @@ struct SettingsView: View {
                 Section("Textures and controls") {
                     Pick(title: "Button pictures", choices: Model.buttonSets, value: $m.buttons)
                     Toggle("Controller vibration", isOn: $m.rumble)
+                    Picker("Audio output", selection: $m.audioDevice) {
+                        Text("System default (follows your choice in macOS)").tag("")
+                        ForEach(AudioOutputs.names(), id: \.self) { Text($0).tag($0) }
+                        if !m.audioDevice.isEmpty && !AudioOutputs.names().contains(m.audioDevice) { Text(m.audioDevice).tag(m.audioDevice) }
+                    }
                     HStack {
                         Text("HD texture pack"); Spacer()
                         Text(m.hdPath.isEmpty ? "none" : (m.hdPath as NSString).lastPathComponent).foregroundStyle(.secondary).lineLimit(1)
@@ -606,6 +638,8 @@ case "restore":
     print(Sync.restore(args.count > 2 ? args[2] : "")); exit(0)
 case "diagnostics":
     print(Diagnostics.text()); exit(0)
+case "outputs":
+    print(AudioOutputs.names().joined(separator: "\n")); exit(0)
 case "status":
     print("local: \(Store.local.path); iCloud: \(Store.cloudAvailable && Prefs.icloudOn ? Store.cloud.path : "off/unavailable")"); exit(0)
 default:

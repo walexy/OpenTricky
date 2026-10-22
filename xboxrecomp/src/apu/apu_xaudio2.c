@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "apu_xaudio2.h"
 
@@ -602,7 +603,18 @@ int xa2_init(void)
         if (!(e && !strcmp(e, "null")) && SDL_InitSubSystem(SDL_INIT_AUDIO)) {
             SDL_AudioSpec spec; SDL_zero(spec);
             spec.format = SDL_AUDIO_S16; spec.channels = 2; spec.freq = (int)NULL_SAMPLE_RATE;
-            SDL_AudioStream *st = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+            SDL_AudioDeviceID dev = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;     /* the system default: SDL moves the stream when the default output changes */
+            const char *want = getenv("OT_AUDIO_DEVICE");                  /* a name (or part of one) of an output device, e.g. "MacBook Pro Speakers" */
+            if (want && want[0]) {
+                int n = 0, i; SDL_AudioDeviceID *ids = SDL_GetAudioPlaybackDevices(&n);
+                for (i = 0; ids && i < n; i++) {
+                    const char *nm = SDL_GetAudioDeviceName(ids[i]);
+                    if (nm && strcasestr(nm, want)) { dev = ids[i]; fprintf(stderr, "[XA2] output device: %s\n", nm); break; }
+                }
+                if (dev == SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) fprintf(stderr, "[XA2] no output device matches OT_AUDIO_DEVICE=%s: the default is used\n", want);
+                SDL_free(ids);
+            }
+            SDL_AudioStream *st = SDL_OpenAudioDeviceStream(dev, &spec, NULL, NULL);
             if (st && SDL_ResumeAudioStreamDevice(st)) {
                 pthread_mutex_lock(&s_lock);       /* published under the lock the submit/queued/shutdown paths read it with */
                 s_stream = st;
