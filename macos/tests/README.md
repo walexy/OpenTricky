@@ -4,7 +4,9 @@
 
     python3 macos/tests/drive.py "$(cat macos/tests/to_venue.txt); press A 200; wait 10; shot a1; wait 60; shot a2"
 
-Steps: `wait s`, `press BUTTON [ms]`, `hold BUTTON s`, `shot name` (PNG into --out), `seq BUTTON@every x count`.
+Steps: `wait s`, `press BUTTON [ms]`, `hold BUTTON s`, `shot name` (PNG into --out), `seq BUTTON@every x count`, `burst name count interval`,
+`waitlog text_with_underscores timeout`, `until text BUTTON every timeout` (press BUTTON until the game log has the text; e.g. `until level_load A 4 140` then
+`until 3_->_4 A 3 100` walks from the menus to the end of the start countdown, whatever the menu timing).
 `to_venue.txt` walks a fresh profile from the title screen to the venue list (Single Event, Race, Amateur, Garibaldi).
 Exit 1 and the crash report if the game died. `--bin` picks another build, e.g. the bounds-checked one:
 

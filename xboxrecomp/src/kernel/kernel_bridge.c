@@ -293,7 +293,7 @@ static uint32_t kernel_data_va_for_ordinal(ULONG ordinal)
 static volatile LONG g_tick_thread_running = 0;
 static HANDLE g_tick_thread = NULL;
 
-extern uint64_t xbox_guest_clock_adjust(uint64_t real_100ns);
+extern uint64_t xbox_guest_clock_lost(void);
 static DWORD WINAPI xbox_tick_count_thread(LPVOID param)
 {
     /* From the performance counter, not GetTickCount: GetTickCount
@@ -306,9 +306,9 @@ static DWORD WINAPI xbox_tick_count_thread(LPVOID param)
     QueryPerformanceCounter(&q0);
     while (g_tick_thread_running) {
         QueryPerformanceCounter(&q);
-        {   /* the guest's KeTickCount follows the guest clock (see xbox_guest_clock_adjust) */
-            uint64_t real = (uint64_t)((double)(q.QuadPart - q0.QuadPart) * 1e7 / (double)f.QuadPart);
-            BRIDGE_MEM32(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT) = base + (DWORD)(xbox_guest_clock_adjust(real) / 10000ULL);
+        {   /* the guest's KeTickCount follows the guest clock (see xbox_guest_clock_lost) */
+            uint64_t real = (uint64_t)((double)(q.QuadPart - q0.QuadPart) * 1e7 / (double)f.QuadPart), lost = xbox_guest_clock_lost();
+            BRIDGE_MEM32(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT) = base + (DWORD)((real > lost ? real - lost : 0) / 10000ULL);
         }
         Sleep(1);
     }
