@@ -2264,7 +2264,7 @@ static void file_ledger_read(HANDLE h, uint32_t n);
 
 /* After a save folder is created on the save drive (a create with disposition 2 under "U:\"), the next kernel calls are traced in full
  * (minus the busiest, uninteresting ones): the save's own steps, to find the one that goes wrong. */
-static volatile int s_save_trace = 0;
+volatile int s_save_trace = 0;       /* also read by kernel_file.c's directory listing trace */
 
 /* Open a file by delegating to the ported xbox_NtCreateFile kernel HLE. */
 static NTSTATUS bridge_create_file_impl(

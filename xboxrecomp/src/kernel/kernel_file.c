@@ -1904,6 +1904,12 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
         ctx->dir = NULL;
     }
 
+    {   extern volatile int s_save_trace;
+        if (s_save_trace > 0)
+            fprintf(stderr, "  [KTRACE] dir listing: handle %p restart %d pattern \"%.*s\" context %s\n", FileHandle, (int)RestartScan,
+                    (FileName && FileName->Buffer) ? (int)FileName->Length : 0, (FileName && FileName->Buffer) ? FileName->Buffer : "",
+                    ctx->dir ? "left over (open)" : "new");
+    }
     if (RestartScan || ctx->dir == NULL) {
         if (ctx->dir) { closedir(ctx->dir); ctx->dir = NULL; }
         const char* dpath = w32_handle_path(FileHandle);
@@ -2001,8 +2007,34 @@ int xbox_iso_handle_release(HANDLE Handle)
     return 1;
 }
 int xbox_iso_handles_in_use(void) { return s_iso_in_use; }
-BOOL xbox_dir_context_bound(HANDLE FileHandle) { (void)FileHandle; return FALSE; }
-void xbox_dir_context_release(HANDLE FileHandle) { (void)FileHandle; }
+/* The per-handle enumeration context (NtQueryDirectoryFile) must not outlive the handle: handles here are heap pointers that get reused, and a
+ * stale context left at the end of an earlier listing made the next directory opened on the same pointer look empty (the save's XCreateSaveGame
+ * enumerates "U:\\" twice, the second time found no files, and the game wrote its save to an unset path). Called when the handle is closed. */
+BOOL xbox_dir_context_bound(HANDLE FileHandle)
+{
+    BOOL bound = FALSE;
+    int i;
+    if (!s_dir_cs_init) return FALSE;
+    EnterCriticalSection(&s_dir_cs);
+    for (i = 0; i < MAX_DIR_CONTEXTS; i++)
+        if (s_dir_contexts[i].handle == FileHandle && s_dir_contexts[i].dir) { bound = TRUE; break; }
+    LeaveCriticalSection(&s_dir_cs);
+    return bound;
+}
+void xbox_dir_context_release(HANDLE FileHandle)
+{
+    int i;
+    if (!s_dir_cs_init || !FileHandle) return;
+    EnterCriticalSection(&s_dir_cs);
+    for (i = 0; i < MAX_DIR_CONTEXTS; i++)
+        if (s_dir_contexts[i].handle == FileHandle) {
+            if (s_dir_contexts[i].dir) closedir(s_dir_contexts[i].dir);
+            s_dir_contexts[i].dir = NULL;
+            s_dir_contexts[i].handle = NULL;
+            s_dir_contexts[i].pattern[0] = 0;
+        }
+    LeaveCriticalSection(&s_dir_cs);
+}
 
 #endif /* _WIN32 */
 

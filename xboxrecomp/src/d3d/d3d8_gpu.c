@@ -1640,6 +1640,20 @@ static int vsh_attr_fmt(const Nv2aVshDraw *d, int a, uint32_t *fmt, uint32_t *si
     return 1;
 }
 
+/* memcpy that reports an unreadable source instead of faulting (macOS: mach_vm_read_overwrite checks the source for us) */
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+static int safe_copy(void *dst, const void *src, size_t n)
+{
+    mach_vm_size_t got = 0;
+    if (!n) return 1;
+    return mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)src, (mach_vm_size_t)n, (mach_vm_address_t)(uintptr_t)dst, &got) == KERN_SUCCESS && got == n;
+}
+#else
+static int safe_copy(void *dst, const void *src, size_t n) { memcpy(dst, src, n); return 1; }
+#endif
+
 int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
 {
     struct { const uint8_t *base; uint32_t stride, size, raw; } grp[16];
@@ -1691,7 +1705,24 @@ int d3d8_nv2a_draw_program_gpu(const Nv2aVshDraw *d)
     else if (g_nctab < CT_MAX) { memcpy(g_ctab + (size_t)g_nctab * 768u, d->vconst, 768u * 4u); o->ctab = g_nctab++; }
     else { g_nops--; g_vsh_dropped++; return 1; }
 
-    for (g = 0; g < ngrp; g++) memcpy(g_raw + g_raw_used + grp[g].raw, grp[g].base, grp[g].size);
+    for (g = 0; g < ngrp; g++) {
+        if (!safe_copy(g_raw + g_raw_used + grp[g].raw, grp[g].base, grp[g].size)) {
+            /* a vertex array that points outside readable memory (seen: guest address 0xF3AF6100 used as a host pointer, a crash in this
+             * copy): the draw is dropped, and the first few are described so the code that sets the array up can be found */
+            static int told;
+            if (told++ < 6) {
+                int k;
+                fprintf(stderr, "[GPU] draw dropped: vertex array %d at %p (%u bytes) is not readable; inputs 0x%04X, %u indices; attributes:",
+                        g, (const void *)grp[g].base, (unsigned)grp[g].size, (unsigned)d->inputs, (unsigned)d->nindices);
+                for (k = 0; k < 16; k++)
+                    if (d->inputs & (1u << k)) fprintf(stderr, " [%d kind %u base %p stride %u bytes %u]", k, (unsigned)d->attr[k].kind, (const void *)d->attr[k].base,
+                                                       (unsigned)d->attr[k].stride, (unsigned)d->attr[k].bytes);
+                fprintf(stderr, "\n");
+            }
+            g_nops--; g_vsh_dropped++;
+            return 1;
+        }
+    }
     memcpy(g_idxa + g_idx_used, d->indices, d->nindices * 4u);
     o->idx_first = g_idx_used; o->idx_count = d->nindices;
 
