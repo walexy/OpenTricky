@@ -1,4 +1,4 @@
-// Draws the app icon (1024x1024 PNG): swiftc make_icon.swift -o make_icon && ./make_icon out.png
+// Draws the app icon (1024x1024 PNG): swiftc make_icon.swift -o make_icon && ./make_icon out.png logo.png
 import AppKit
 
 let S: CGFloat = 1024
@@ -37,25 +37,12 @@ peak([(80, 100), (80, 300), (300, 470), (440, 350), (620, 520), (800, 340), (950
 peak([(620, 520), (800, 340), (950, 430), (950, 100), (700, 100), (760, 330)], rgb(176, 188, 226))
 peak([(300, 470), (440, 350), (520, 100), (330, 100), (380, 300)], rgb(176, 188, 226))
 
-// a jump ramp and the rider's board arcing over it: a bold white slash with a trail
-ctx.setLineCap(.round)
-rgb(255, 255, 255, 0.35).setStroke()
-let trail = NSBezierPath(); trail.lineWidth = 20
-trail.move(to: NSPoint(x: 190, y: 330)); trail.curve(to: NSPoint(x: 640, y: 640), controlPoint1: NSPoint(x: 330, y: 330), controlPoint2: NSPoint(x: 520, y: 470)); trail.stroke()
-ctx.saveGState()
-ctx.translateBy(x: 700, y: 668); ctx.rotate(by: .pi / 5.2)
-let board = NSBezierPath(roundedRect: NSRect(x: -150, y: -24, width: 300, height: 48), xRadius: 24, yRadius: 24)
-rgb(24, 20, 48).setFill(); board.fill()
-rgb(255, 120, 40).setFill(); NSBezierPath(roundedRect: NSRect(x: -150, y: -24, width: 300, height: 14), xRadius: 7, yRadius: 7).fill()
-ctx.restoreGState()
-
-// wordmark
-let para = NSMutableParagraphStyle(); para.alignment = .center
-let font = NSFont.systemFont(ofSize: 210, weight: .black)
-let shadow = NSShadow(); shadow.shadowColor = rgb(255, 255, 255, 0.85); shadow.shadowOffset = NSSize(width: 0, height: -6); shadow.shadowBlurRadius = 18
-let text = NSAttributedString(string: "OSSX", attributes: [.font: font, .foregroundColor: rgb(54, 20, 104), .paragraphStyle: para, .kern: 6, .shadow: shadow,
-                                                           .obliqueness: 0.22])
-text.draw(in: NSRect(x: 100, y: 150, width: 824, height: 300))
+// the SSX Tricky logo (logo.png, from SteamGridDB logo 55991) across the middle, with a soft drop shadow
+let logo = NSImage(contentsOfFile: CommandLine.arguments[2])!
+let lw: CGFloat = 780, lh = lw * logo.size.height / logo.size.width
+let shadow = NSShadow(); shadow.shadowColor = rgb(20, 10, 50, 0.55); shadow.shadowOffset = NSSize(width: 0, height: -10); shadow.shadowBlurRadius = 24
+shadow.set()
+logo.draw(in: NSRect(x: (S - lw) / 2, y: (S - lh) / 2 - 10, width: lw, height: lh), from: .zero, operation: .sourceOver, fraction: 1)
 ctx.restoreGState()
 
 // a thin inner edge for depth

@@ -16,9 +16,9 @@ python3 "$HERE/make_resources.py" >/dev/null
 cp -R "$ROOT/port/assets" "$APP/Contents/Resources/assets"
 swiftc -O -swift-version 5 "$HERE/ot-tool.swift" -o "$APP/Contents/Resources/ot-tool" 2>&1 | grep -E "error" || true
 [ -x "$APP/Contents/Resources/ot-tool" ] || echo "(settings window not built: swiftc failed; the app still starts the game)"
-# app icon: drawn by make_icon.swift, packed into AppIcon.icns
+# app icon: drawn by make_icon.swift around logo.png, packed into AppIcon.icns
 ICONS="$(mktemp -d)"
-if swiftc -O "$HERE/make_icon.swift" -o "$ICONS/make_icon" 2>/dev/null && "$ICONS/make_icon" "$ICONS/icon.png"; then
+if swiftc -O "$HERE/make_icon.swift" -o "$ICONS/make_icon" 2>/dev/null && "$ICONS/make_icon" "$ICONS/icon.png" "$HERE/logo.png"; then
     mkdir "$ICONS/AppIcon.iconset"
     for sz in 16 32 128 256 512; do
         sips -z $sz $sz "$ICONS/icon.png" --out "$ICONS/AppIcon.iconset/icon_${sz}x${sz}.png" >/dev/null
