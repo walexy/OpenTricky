@@ -758,7 +758,7 @@ static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int s
         static int up_mode = -1; static float up_sharp = 0.35f;     /* 0 smooth (plain blit), 1 sharp bicubic, 2 edge-adaptive */
         if (up_mode < 0) {
             const char *e = getenv("OT_UPSCALE");
-            up_mode = (e && (!strcmp(e, "smooth") || !strcmp(e, "off") || !strcmp(e, "0"))) ? 0 : (e && !strcmp(e, "sharp")) ? 1 : 2;
+            up_mode = (e && !strcmp(e, "edge")) ? 2 : (e && !strcmp(e, "sharp")) ? 1 : 0;       /* default: the plain blit, as the original; edge / sharp are options */
             up_sharp = envf("OT_SHARPEN", 0.35f); if (up_sharp < 0.0f) up_sharp = 0.0f; if (up_sharp > 1.0f) up_sharp = 1.0f;
         }
         if (up_mode) {
@@ -1268,10 +1268,10 @@ static SDL_GPUSampler *sampler_for(const SKey *k)
     si.address_mode_v = k->av == 1 ? SDL_GPU_SAMPLERADDRESSMODE_REPEAT : k->av == 2 ? SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT : SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     si.address_mode_w = si.address_mode_u;
     si.mip_lod_bias = k->bias; si.min_lod = (float)k->maxmip; si.max_lod = k->mip ? 1000.0f : (float)k->maxmip;
-    {   /* anisotropic filtering: what the title asks for, or at least OT_ANISO (default 4; 0 or 1 = only the title's own) */
+    {   /* anisotropic filtering: what the title asks for, or at least OT_ANISO (default off: only the title's own) */
         static int want = -1;
         float a = (float)k->aniso;
-        if (want < 0) { want = (int)envf("OT_ANISO", 4.0f); if (want < 0) want = 0; if (want > 16) want = 16; }
+        if (want < 0) { want = (int)envf("OT_ANISO", 0.0f); if (want < 0) want = 0; if (want > 16) want = 16; }
         if ((float)want > a) a = (float)want;
         if (a > 1.0f && k->min >= 2) { si.enable_anisotropy = true; si.max_anisotropy = a; }
     }

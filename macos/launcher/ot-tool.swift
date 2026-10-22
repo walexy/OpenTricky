@@ -395,8 +395,8 @@ final class Model: ObservableObject {
                                 Choice(value: "1080", label: "Extra large (1080)")]
     static let cursorChoices = [Choice(value: "", label: "After 2 seconds (default)"), Choice(value: "1000", label: "After 1 second"), Choice(value: "5000", label: "After 5 seconds"),
                                 Choice(value: "0", label: "Never")]
-    static let upscaleChoices = [Choice(value: "", label: "Edge-adaptive (default)"), Choice(value: "sharp", label: "Sharp bicubic"), Choice(value: "smooth", label: "Smooth (plain)")]
-    static let anisoChoices = [Choice(value: "", label: "4x (default)"), Choice(value: "1", label: "Off"), Choice(value: "2", label: "2x"), Choice(value: "8", label: "8x"),
+    static let upscaleChoices = [Choice(value: "", label: "Plain (original, default)"), Choice(value: "edge", label: "Edge-adaptive (FSR 1 style)"), Choice(value: "sharp", label: "Sharp bicubic")]
+    static let anisoChoices = [Choice(value: "", label: "Off (original, default)"), Choice(value: "2", label: "2x"), Choice(value: "4", label: "4x"), Choice(value: "8", label: "8x"),
                                Choice(value: "16", label: "16x")]
     static let fpsChoices = [Choice(value: "", label: "60 (original)"), Choice(value: "120", label: "120"), Choice(value: "144", label: "144"), Choice(value: "240", label: "240"),
                              Choice(value: "monitor", label: "Match my display"), Choice(value: "0", label: "Unlimited")]
@@ -419,8 +419,8 @@ final class Model: ObservableObject {
         let ini = Ini(url: Store.iniFile)
         for r in Bindings.keyRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2; padBind[r.0] = ini.get("Controller", r.0) ?? r.3 }
         for r in Bindings.stickRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2 }
-        aniso = kv.get("OT_ANISO") ?? ""; if aniso == "4" { aniso = "" }
-        upscale = kv.get("OT_UPSCALE") ?? ""; if upscale == "edge" { upscale = "" }
+        aniso = kv.get("OT_ANISO") ?? ""; if aniso == "0" || aniso == "1" { aniso = "" }
+        upscale = kv.get("OT_UPSCALE") ?? ""; if upscale == "smooth" || upscale == "plain" { upscale = "" }
         cursorHide = kv.get("OT_CURSOR_HIDE_MS") ?? ""; if cursorHide == "2000" { cursorHide = "" }
         fullscreen = on(kv.get("OT_FULLSCREEN"))
         fps = kv.get("OT_FPS") ?? ""; if fps == "60" { fps = "" }
