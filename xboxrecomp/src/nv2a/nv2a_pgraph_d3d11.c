@@ -488,6 +488,13 @@ static const uint8_t *va_ptr(uint32_t offset, uint32_t need)
         return NULL;
     if (off >= g_pg_mem_size || need > g_pg_mem_size - off)
         return NULL;
+    if ((uintptr_t)(g_pg_mem_base + off) < 0x100000000ull) {      /* below 4 GB: not the guest window (which sits at g_xbox_mem_offset) */
+        static int told;
+        if (told++ < 6)
+            fprintf(stderr, "[PGRAPH] vertex data pointer %p from memory base %p + 0x%08X is not in the guest window: not drawn\n",
+                    (const void *)(g_pg_mem_base + off), (const void *)g_pg_mem_base, off);
+        return NULL;
+    }
     if (!pg_readable(g_pg_mem_base + off, need)) {
         static int told;
         if (told++ < 6)
