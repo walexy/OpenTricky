@@ -76,4 +76,4 @@ void (*pacing_lookup(uint32_t xbox_va))(void)
 
 /* the guest clocks follow the countdown slowdown (xbox_guest_clock_adjust in kernel_hal.c) */
 extern double (*xbox_clock_scale_hook)(void);
-__attribute__((constructor)) static void pacing_install_clock_hook(void) { xbox_clock_scale_hook = pacing_tick_scale; }
+__attribute__((constructor)) static void pacing_install_clock_hook(void) { if (cfg_slow() > 1.0) xbox_clock_scale_hook = pacing_tick_scale; }     /* only when the option is on: otherwise the clocks are untouched */
