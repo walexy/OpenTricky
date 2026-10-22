@@ -186,6 +186,7 @@ final class Model: ObservableObject {
     @Published var windowH = ""
     @Published var cursorHide = ""
     @Published var upscale = ""
+    @Published var aniso = ""
     @Published var renderH = ""
     @Published var fullscreen = false
     @Published var fps = ""
@@ -216,6 +217,8 @@ final class Model: ObservableObject {
     static let cursorChoices = [Choice(value: "", label: "After 2 seconds (default)"), Choice(value: "1000", label: "After 1 second"), Choice(value: "5000", label: "After 5 seconds"),
                                 Choice(value: "0", label: "Never")]
     static let upscaleChoices = [Choice(value: "", label: "Sharp (default)"), Choice(value: "smooth", label: "Smooth (plain)")]
+    static let anisoChoices = [Choice(value: "", label: "4x (default)"), Choice(value: "1", label: "Off"), Choice(value: "2", label: "2x"), Choice(value: "8", label: "8x"),
+                               Choice(value: "16", label: "16x")]
     static let fpsChoices = [Choice(value: "", label: "60 (original)"), Choice(value: "120", label: "120"), Choice(value: "144", label: "144"), Choice(value: "240", label: "240"),
                              Choice(value: "monitor", label: "Match my display"), Choice(value: "0", label: "Unlimited")]
     static let vsyncs = [Choice(value: "", label: "Default"), Choice(value: "vsync", label: "On"), Choice(value: "adaptive", label: "Adaptive"), Choice(value: "off", label: "Off")]
@@ -232,6 +235,7 @@ final class Model: ObservableObject {
         let s = kv.get("OT_SHAPE") ?? ""; shape = s == "auto" ? "" : s
         renderH = kv.get("OT_RENDER_H") ?? ""
         windowH = kv.get("OT_WINDOW_H") ?? ""; if windowH == "900" { windowH = "" }
+        aniso = kv.get("OT_ANISO") ?? ""; if aniso == "4" { aniso = "" }
         upscale = kv.get("OT_UPSCALE") ?? ""; if upscale == "sharp" { upscale = "" }
         cursorHide = kv.get("OT_CURSOR_HIDE_MS") ?? ""; if cursorHide == "2000" { cursorHide = "" }
         fullscreen = on(kv.get("OT_FULLSCREEN"))
@@ -255,6 +259,7 @@ final class Model: ObservableObject {
         k.set("OT_WINDOW_H", windowH.isEmpty ? nil : windowH)
         k.set("OT_CURSOR_HIDE_MS", cursorHide.isEmpty ? nil : cursorHide)
         k.set("OT_UPSCALE", upscale.isEmpty ? nil : upscale)
+        k.set("OT_ANISO", aniso.isEmpty ? nil : aniso)
         k.set("OT_FULLSCREEN", fullscreen ? "1" : nil)
         k.set("OT_FPS", fps.isEmpty ? nil : fps)
         k.set("OT_VSYNC", vsync.isEmpty ? nil : vsync)
@@ -312,6 +317,7 @@ struct SettingsView: View {
                 }
                 Section("Picture quality") {
                     Pick(title: "Anti-aliasing (SMAA)", choices: Model.smaas, value: $m.smaa)
+                    Pick(title: "Texture filtering (anisotropic)", choices: Model.anisoChoices, value: $m.aniso)
                     Toggle("Soft shadows", isOn: $m.softShadows)
                     Toggle("HDR / wide colour (needs an HDR display)", isOn: $m.hdr)
                     if m.hdr {
