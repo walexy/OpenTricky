@@ -60,3 +60,12 @@ The macOS menu bar has **SSX Tricky › Settings… (Cmd+,)** and a **Game** men
 Not done: a "Settings" entry inside the game's own 3D menus (that needs a patch to the recompiled menu code; see MACOS_PORT_PLAN.md).
 
 The mouse pointer hides after 2 seconds without movement and returns when the mouse moves (OT_CURSOR_HIDE_MS: 0 = never; also in the settings window).
+
+## Release build (bundled, signed, notarized)
+
+    SIGN_ID=auto RELEASE=1 bash macos/launcher/make_app.sh                       # signed (Developer ID, hardened runtime) app + dmg
+    NOTARY_PROFILE=opentricky SIGN_ID=auto RELEASE=1 bash macos/launcher/make_app.sh   # ... and submitted to Apple, stapled
+
+The app carries SDL3, sdl2-compat and OpenSSL in Contents/Frameworks (no Homebrew needed), the main executable is a signed stub (`stub.c`)
+that starts `Resources/launcher.sh`, and the game keeps its files in ~/Library/Application Support/OpenTricky (`OT_HOME_DIR`).
+One-time setup for notarization: `xcrun notarytool store-credentials opentricky --apple-id <your id> --team-id <TEAMID> --password <app-specific password>`.

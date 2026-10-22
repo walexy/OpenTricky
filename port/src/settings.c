@@ -949,6 +949,8 @@ int settings_game_dir(char *out, size_t out_sz)
     /* the folder of the executable, as on Windows */
     char exe[4096], *slash;
     uint32_t k = (uint32_t)sizeof exe;
+    const char *home = getenv("OT_HOME_DIR");      /* see GetModuleFileNameA: the app keeps its files outside the bundle */
+    if (home && home[0]) return snprintf(out, out_sz, "%s", home) < (int)out_sz;
     if (_NSGetExecutablePath(exe, &k) != 0) return 0;
     slash = strrchr(exe, '/');
     if (slash) *slash = 0;

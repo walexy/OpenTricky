@@ -11,7 +11,8 @@
 # Settings window: shown at every start unless you turn that off in it; open it anyway with Option held, or --args --settings
 APP_NAME="SSX Tricky"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BIN="$HERE/../Resources/ssx-tricky-bin"
+case "$HERE" in */Contents/Resources) RES="$HERE" ;; *) RES="$HERE/../Resources" ;; esac     # run as Resources/launcher.sh (the app's stub) or from MacOS/
+BIN="$RES/ssx-tricky-bin"
 SUPPORT="$HOME/Library/Application Support/OpenTricky"
 ISO_FILE="$SUPPORT/disc-image.txt"
 LOG="$SUPPORT/last-run.log"
@@ -23,7 +24,7 @@ say() {   # say <message>: a dialog (the app has no terminal)
 mkdir -p "$SUPPORT" || { say "Could not create $SUPPORT"; exit 1; }
 
 # settings window + iCloud mirror of the settings and game saves (macos/launcher/ot-tool.swift); both are optional extras
-TOOL="$HERE/../Resources/ot-tool"
+TOOL="$RES/ot-tool"
 [ -x "$TOOL" ] || TOOL=""
 [ -n "$TOOL" ] && "$TOOL" sync pull >> "$SUPPORT/sync.log" 2>&1          # newer settings / saves from iCloud Drive, if it is there
 if [ -n "$TOOL" ]; then
@@ -31,9 +32,9 @@ if [ -n "$TOOL" ]; then
     "$TOOL" gui $gui_args || exit 0                                       # closed without Play: do not start the game
 fi
 
-# the game needs SDL3 and OpenSSL from Homebrew
+# the game needs SDL3 and OpenSSL: bundled in Contents/Frameworks in a release app, from Homebrew in a local build
 missing=""
-for lib in /opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib /opt/homebrew/opt/openssl@4/lib/libcrypto.4.dylib /opt/homebrew/opt/sdl2-compat/lib/libSDL2-2.0.0.dylib; do
+[ -d "$RES/../Frameworks" ] || for lib in /opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib /opt/homebrew/opt/openssl@4/lib/libcrypto.4.dylib /opt/homebrew/opt/sdl2-compat/lib/libSDL2-2.0.0.dylib; do
     [ -e "$lib" ] || missing="$missing $(basename "$(dirname "$(dirname "$lib")")")"
 done
 if [ -n "$missing" ]; then
@@ -58,9 +59,8 @@ if [ -z "$ISO" ] || [ ! -f "$ISO" ]; then
     printf '%s' "$ISO" > "$ISO_FILE"
 fi
 
-# the game keeps its files next to the program it was started as: start it as a link that sits in $SUPPORT
-LINK="$SUPPORT/$APP_NAME"
-ln -sf "$BIN" "$LINK"
+# the game keeps its files (settings.ini, saves, crash reports) in $SUPPORT: OT_HOME_DIR says so, the program itself stays in the app bundle
+export OT_HOME_DIR="$SUPPORT"
 
 # display settings: ~/Library/Application Support/OpenTricky/display.env (the settings window writes it; you can also edit it), lines like
 #   OT_SHAPE=21:9        auto (default) | 4:3 | 16:9 | 21:9 | 32:9 | a number
@@ -91,11 +91,11 @@ load_env() {
 [ -f "$SUPPORT/display.env" ] && load_env "$SUPPORT/display.env"
 
 [ -n "$TOOL" ] && export OT_TOOL="$TOOL"             # the game opens the settings window with it (Cmd+, or F2)
-export OT_ASSET_DIR="$HERE/../Resources/assets"      # the button pictures and the HD index (resources.txt lists them)
+export OT_ASSET_DIR="$RES/assets"      # the button pictures and the HD index (resources.txt lists them)
 cd "$SUPPORT" || exit 1
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
 rm -f "$SUPPORT/crash.txt.old"; [ -f "$SUPPORT/crash.txt" ] && mv -f "$SUPPORT/crash.txt" "$SUPPORT/crash.txt.old"    # a report shown below is from this run
-"$LINK" --direct "$ISO" > "$LOG" 2>&1 &
+"$BIN" --direct "$ISO" > "$LOG" 2>&1 &
 child=$!
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP     # quitting the app (Dock, shutdown) stops the game too, not just this wrapper
 wait "$child"

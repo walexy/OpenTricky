@@ -1726,6 +1726,8 @@ DWORD GetModuleFileNameA(HMODULE mod, LPSTR buf, DWORD size)
     if (!buf || !size) return 0;
 #if defined(__APPLE__)
     uint32_t n = size;
+    const char *home = getenv("OT_HOME_DIR");      /* the app runs the real binary inside its bundle but keeps its files (settings, saves) here */
+    if (home && home[0]) { snprintf(buf, size, "%s/SSX Tricky", home); return (DWORD)strlen(buf); }
     if (_NSGetExecutablePath(buf, &n) != 0) { buf[0] = 0; return 0; }
 #else
     ssize_t n = readlink("/proc/self/exe", buf, size - 1);
