@@ -62,7 +62,8 @@ static void hook_AC9B0(void)
     ms = (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)f.QuadPart;
     {
         static int told;
-        if (told++ < 20) fprintf(stderr, "[PACING] level load took %.0f ms%s\n", ms, ms < cfg_min_load_ms() ? ": held so the loading screen can be seen" : "");
+        double total = ms < cfg_min_load_ms() ? cfg_min_load_ms() : ms;
+        if (told++ < 20) fprintf(stderr, "[PACING] level load took %.0f ms, screen held for %.0f ms in all (minimum %.0f)\n", ms, total, cfg_min_load_ms());
     }
     if (ms < cfg_min_load_ms()) Sleep((DWORD)(cfg_min_load_ms() - ms));
 }
