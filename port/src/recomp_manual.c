@@ -45,6 +45,7 @@
 #include "pumplag.h"
 #include "strmwalk.h"
 #include "chantfix.h"
+#include "pacing.h"
 #include "ticktrace.h"
 #include "../../xboxrecomp/src/kernel/xbox_perf.h"
 extern void (*perf_lookup(unsigned int xbox_va))(void);
@@ -250,6 +251,12 @@ recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
      * default 2; 0 = the original walk, see strmwalk.h). */
     {
         recomp_func_t fn = strmwalk_lookup(xbox_va);
+        if (fn) return fn;
+    }
+
+    /* Loading screens held long enough to be seen, the start countdown slowed (OT_MIN_LOAD_MS, OT_COUNTDOWN_SLOW; see pacing.h). */
+    {
+        recomp_func_t fn = pacing_lookup(xbox_va);
         if (fn) return fn;
     }
 

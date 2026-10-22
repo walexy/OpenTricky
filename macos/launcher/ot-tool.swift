@@ -362,6 +362,8 @@ final class Model: ObservableObject {
     @Published var cursorHide = ""
     @Published var upscale = ""
     @Published var aniso = ""
+    @Published var minLoad = ""
+    @Published var countdown = ""
     @Published var rumble = true
     @Published var audioDevice = ""
     @Published var keyBind: [String: String] = [:]      // settings.ini [Keyboard]
@@ -398,6 +400,9 @@ final class Model: ObservableObject {
     static let upscaleChoices = [Choice(value: "", label: "Plain (original, default)"), Choice(value: "edge", label: "Edge-adaptive (FSR 1 style)"), Choice(value: "sharp", label: "Sharp bicubic")]
     static let anisoChoices = [Choice(value: "", label: "Off (original, default)"), Choice(value: "2", label: "2x"), Choice(value: "4", label: "4x"), Choice(value: "8", label: "8x"),
                                Choice(value: "16", label: "16x")]
+    static let loadChoices = [Choice(value: "", label: "As fast as it loads (original, default)"), Choice(value: "2000", label: "At least 2 seconds"),
+                              Choice(value: "3000", label: "At least 3 seconds"), Choice(value: "5000", label: "At least 5 seconds")]
+    static let countdownChoices = [Choice(value: "", label: "Original speed (default)"), Choice(value: "1.5", label: "50% longer"), Choice(value: "2", label: "Twice as long")]
     static let fpsChoices = [Choice(value: "", label: "60 (original)"), Choice(value: "120", label: "120"), Choice(value: "144", label: "144"), Choice(value: "240", label: "240"),
                              Choice(value: "monitor", label: "Match my display"), Choice(value: "0", label: "Unlimited")]
     static let vsyncs = [Choice(value: "", label: "Default"), Choice(value: "vsync", label: "On"), Choice(value: "adaptive", label: "Adaptive"), Choice(value: "off", label: "Off")]
@@ -419,6 +424,8 @@ final class Model: ObservableObject {
         let ini = Ini(url: Store.iniFile)
         for r in Bindings.keyRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2; padBind[r.0] = ini.get("Controller", r.0) ?? r.3 }
         for r in Bindings.stickRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2 }
+        minLoad = kv.get("OT_MIN_LOAD_MS") ?? ""; if minLoad == "0" { minLoad = "" }
+        countdown = kv.get("OT_COUNTDOWN_SLOW") ?? ""; if countdown == "1" { countdown = "" }
         aniso = kv.get("OT_ANISO") ?? ""; if aniso == "0" || aniso == "1" { aniso = "" }
         upscale = kv.get("OT_UPSCALE") ?? ""; if upscale == "smooth" || upscale == "plain" { upscale = "" }
         cursorHide = kv.get("OT_CURSOR_HIDE_MS") ?? ""; if cursorHide == "2000" { cursorHide = "" }
@@ -449,6 +456,8 @@ final class Model: ObservableObject {
         k.set("OT_CURSOR_HIDE_MS", cursorHide.isEmpty ? nil : cursorHide)
         k.set("OT_UPSCALE", upscale.isEmpty ? nil : upscale)
         k.set("OT_ANISO", aniso.isEmpty ? nil : aniso)
+        k.set("OT_MIN_LOAD_MS", minLoad.isEmpty ? nil : minLoad)
+        k.set("OT_COUNTDOWN_SLOW", countdown.isEmpty ? nil : countdown)
         k.set("OT_RUMBLE", rumble ? nil : "0")
         k.set("OT_AUDIO_DEVICE", audioDevice.isEmpty ? nil : audioDevice)
         k.set("OT_FULLSCREEN", fullscreen ? "1" : nil)
@@ -526,6 +535,11 @@ struct SettingsView: View {
                             Slider(value: $m.peak, in: 1...3) { Text("Peak brightness \(m.peak, specifier: "%.1f")x") }
                         }
                     }
+                }
+                Section("Pacing") {
+                    Pick(title: "Loading screens stay up", choices: Model.loadChoices, value: $m.minLoad)
+                    Pick(title: "Start-gate countdown lasts", choices: Model.countdownChoices, value: $m.countdown)
+                    Text("From an SSD a track loads in under a second; the console took many. These give the loading screen and the 3-2-1 time to be seen.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Textures and controls") {
                     Pick(title: "Button pictures", choices: Model.buttonSets, value: $m.buttons)

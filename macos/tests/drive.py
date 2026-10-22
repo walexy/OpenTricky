@@ -3,7 +3,7 @@
 
     drive.py [--iso PATH] [--bin PATH] [--out DIR] [--env K=V ...] "wait 14; shot a; press START 200; wait 2; shot b"
 
-Steps (separated by ;):  wait <seconds> | press <BUTTON> [ms] | shot <name> | hold <BUTTON> <seconds> | seq <BUTTON>@<every s>x<count>
+Steps (separated by ;):  wait <seconds> | press <BUTTON> [ms] | shot <name> | hold <BUTTON> <seconds> | seq <BUTTON>@<every s>x<count> | burst <name> <count> <interval s>
 Screenshots land in <out>/<name>.png. Exit status 1 if the game died (crash.txt in the run directory) before the script finished.
 """
 import os, socket, subprocess, sys, time, argparse, signal
@@ -56,6 +56,13 @@ def main():
                 path = os.path.join(a.out, w[1] + ".png")
                 if os.path.exists(path): os.remove(path)
                 print(step, "->", cmd("shot " + path)); time.sleep(1.2)
+            elif w[0] == "burst":            # burst <name> <count> <interval s>: count screenshots <name>_<i>.png, interval apart (wall-clock stamps in <out>/<name>.times)
+                n, iv = int(w[2]), float(w[3]); t0 = time.time(); times = []
+                for k in range(n):
+                    if not alive(): break
+                    cmd("shot " + os.path.join(a.out, "%s_%02d.png" % (w[1], k))); times.append("%02d %.2f" % (k, time.time() - t0))
+                    time.sleep(max(0.0, iv - 0.15))
+                open(os.path.join(a.out, w[1] + ".times"), "w").write("\n".join(times))
             elif w[0] == "seq":
                 b, rest = w[1].split("@"); every, count = rest.split("x")
                 for _ in range(int(count)):
