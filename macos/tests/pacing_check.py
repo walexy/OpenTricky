@@ -18,9 +18,10 @@ def run(slow, minload, port):
     return (int(m.group(1)) if m else None), (int(l.group(2)) if l else None), r.returncode
 
 bad = 0
-for slow, minload, port in (("1.5", "3000", 47301), ("1", "0", 47302)):
+# the control uses 1.001: a factor of exactly 1 installs no clock hook, and the hook is what logs the race states the countdown is measured from
+for slow, minload, port in (("1.5", "3000", 47301), ("1.001", "0", 47302)):
     cd, held, rc = run(slow, minload, port)
-    want_cd = 2500 * float(slow)
+    want_cd = 2500 * float(slow)       # 1.001 is within the tolerance of 1
     ok_cd = cd is not None and 0.9 * want_cd <= cd <= 1.1 * want_cd
     ok_hold = (held is None) if int(minload) == 0 else (held is not None and held >= int(minload) - 1)     # no hook (no log line) when the hold is off
     print("slow=%s min_load=%s: countdown %s ms (want %.0f +-10%%) %s; load screen %s ms (want >= %s, none when 0) %s" %
