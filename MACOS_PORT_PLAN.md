@@ -17,3 +17,13 @@
 `OT_UPSCALE=edge` (the default; `sharp` = bicubic, `smooth` = the plain blit) adds an FSR 1 style filter to the SDR final pass (`easu` in d3d8_gpu_out.c, an original
 implementation of the idea): a 4x4 patch gives the local gradient, the Lanczos-2 shaped kernel is stretched along the edge, the result is held inside the four nearest texels,
 then the same mild unsharp (OT_SHARPEN). Seen against `smooth` on the title menu (480p into a 900p window): cleaner outlines and snowflake detail, no ringing.
+
+## 2026-10-22: pacing (loading screens, start countdown)
+Measured on this Mac (log lines `[PACING] ...`): a track loads in about 0.75-1 s (the console: many seconds); the start countdown (race state 3) lasts 2.5 s; the
+loading screen is animated by the title itself, so it can simply be kept up.
+- `OT_MIN_LOAD_MS` (default 3000): InGameState_LoadLevel (0xAC9B0) is held to at least this long after it returns; the animated "loading..." screen stays up
+  (seen in a window capture during the hold).
+- `OT_COUNTDOWN_SLOW` (default 1.5): while race state is 3 the title's clocks (KeQueryInterruptTime, KeQueryPerformanceCounter, KeTickCount) run at 1/factor
+  (`xbox_guest_clock_adjust`, kernel_hal.c); the title's timers are armed against them, so the countdown measured 3.73 s at 1.5 and 4.70 s at 2. (Stretching the 60 Hz
+  vblank alone changed nothing: the title's tick follows its own timer queue.) The guest clock stays monotonic and just stays behind by what it lost.
+- Both are options in the settings window ("Pacing"); `OT_MIN_LOAD_MS=0` / `OT_COUNTDOWN_SLOW=1` give the original behaviour. The upstream PR branch should default to the original.

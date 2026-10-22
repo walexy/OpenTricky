@@ -141,6 +141,34 @@ static void xbox_update_tick_count(void)
 }
 
 /* ============================================================================
+ * Guest clock scale
+ *
+ * The title's clocks (interrupt time, the performance counter, KeTickCount) can be made to run slower than the host's for a while: while the host
+ * says so (xbox_clock_scale_hook returns a factor > 1) the guest clock advances by 1/factor of the real time. The title's own timers are armed
+ * against these clocks, so everything it paces by them (here: the start countdown, OT_COUNTDOWN_SLOW) is stretched by the factor. The guest clock
+ * stays monotonic and does not jump back when the factor returns to 1: it simply stays behind by what it lost.
+ * ============================================================================ */
+double (*xbox_clock_scale_hook)(void) = NULL;
+
+static uint64_t g_clk_adj, g_clk_last;       /* 100 ns units */
+static volatile LONG g_clk_lock;
+
+uint64_t xbox_guest_clock_adjust(uint64_t real_100ns)
+{
+    uint64_t a;
+    double sc = xbox_clock_scale_hook ? xbox_clock_scale_hook() : 1.0;
+    while (InterlockedCompareExchange(&g_clk_lock, 1, 0) != 0) Sleep(0);
+    if (g_clk_last == 0) g_clk_last = real_100ns;
+    if (real_100ns > g_clk_last) {
+        if (sc > 1.0) g_clk_adj += (uint64_t)((double)(real_100ns - g_clk_last) * (1.0 - 1.0 / sc));
+        g_clk_last = real_100ns;
+    }
+    a = g_clk_adj;
+    InterlockedExchange(&g_clk_lock, 0);
+    return real_100ns - a;
+}
+
+/* ============================================================================
  * Performance Counters
  *
  * Direct 1:1 mapping to Win32 QueryPerformanceCounter/Frequency.
@@ -149,8 +177,14 @@ static void xbox_update_tick_count(void)
 
 LARGE_INTEGER __stdcall xbox_KeQueryPerformanceCounter(void)
 {
-    LARGE_INTEGER counter;
+    LARGE_INTEGER counter, f;
     QueryPerformanceCounter(&counter);
+    QueryPerformanceFrequency(&f);
+    if (xbox_clock_scale_hook && f.QuadPart > 0) {      /* the guest's counter: behind the real one by what the guest clock lost (see above) */
+        uint64_t real = (uint64_t)((double)counter.QuadPart * 1e7 / (double)f.QuadPart);
+        uint64_t lost = real - xbox_guest_clock_adjust(real);
+        counter.QuadPart -= (LONGLONG)((double)lost * (double)f.QuadPart / 1e7);
+    }
     return counter;
 }
 
@@ -813,5 +847,5 @@ ULONGLONG __stdcall xbox_KeQueryInterruptTime(void)
      * scale by 10,000. Resolution is coarser than the real kernel's, but it is
      * monotonic, which is the property callers actually depend on.
      */
-    return (ULONGLONG)GetTickCount64() * 10000ULL;
+    return xbox_guest_clock_adjust((ULONGLONG)GetTickCount64() * 10000ULL);
 }

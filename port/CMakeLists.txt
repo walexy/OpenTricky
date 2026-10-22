@@ -121,6 +121,7 @@ set(GAME_SOURCES
     src/pumplag.c
     src/strmwalk.c
     src/chantfix.c
+    src/pacing.c
     src/ctlscheme.c
     src/ps2legend.c
     src/fullfade.c
