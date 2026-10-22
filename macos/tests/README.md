@@ -1,0 +1,14 @@
+# macOS test drivers
+
+`drive.py` starts the game with the diag console (`XBOX_DIAG_PORT`, port 47011 by default) and runs a script of steps:
+
+    python3 macos/tests/drive.py "$(cat macos/tests/to_venue.txt); press A 200; wait 10; shot a1; wait 60; shot a2"
+
+Steps: `wait s`, `press BUTTON [ms]`, `hold BUTTON s`, `shot name` (PNG into --out), `seq BUTTON@every x count`.
+`to_venue.txt` walks a fresh profile from the title screen to the venue list (Single Event, Race, Amateur, Garibaldi).
+Exit 1 and the crash report if the game died. `--bin` picks another build, e.g. the bounds-checked one:
+
+    cmake -S port -B ../build/ubsan -G Ninja -DCMAKE_BUILD_TYPE=Release -DOT_GPU=ON -DOT_HEADLESS=ON -DOT_WINDOW=ON \
+      -DCMAKE_C_FLAGS="-Wno-error=int-conversion -w -fsanitize=bounds,object-size" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=bounds,object-size"
+
+`hdr_test`, `clip_test`: see their sources. The diag console accepts `press`, `shot`, `help`, `quit`.

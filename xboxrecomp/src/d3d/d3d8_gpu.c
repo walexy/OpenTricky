@@ -901,7 +901,11 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
             SDL_EndGPUCopyPass(cp);
             blit_to_window(cmd, g_movie, (int)mw, (int)mh, 4.0 / 3.0);     /* movies keep their own 4:3 */
             { static unsigned movie_presents; movie_presents++;
-              if (shot_wanted(movie_presents, 1)) { shot_save(cmd, g_movie, 1, movie_presents); cmd = NULL; } }
+              if (g_shot_req) {      /* a screenshot request (F12, the diag console) while a movie plays */
+                  g_shot_req = 0;
+                  if (capture_save(cmd, g_movie, mw, mh, 1, g_shot_req_path, 1)) fprintf(stderr, "[GPU] screenshot saved: %s (movie frame)\n", g_shot_req_path);
+                  cmd = NULL;
+              } else if (shot_wanted(movie_presents, 1)) { shot_save(cmd, g_movie, 1, movie_presents); cmd = NULL; } }
         }
         if (tb) SDL_ReleaseGPUTransferBuffer(g_dev, tb);
     } else {

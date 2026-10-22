@@ -20,6 +20,8 @@
  * The entry points are the d3d8_* and pgraph_d3d11_* functions the rest of the
  * runtime and the port call; the list is in macos/d3d_seam.txt.
  */
+#include <wchar.h>
+#include <stdlib.h>
 #include "platform/xbox_winnt.h"
 #include "d3d8_xbox.h"
 #include "../nv2a/nv2a_pgraph_d3d11.h"
@@ -227,7 +229,16 @@ int  d3d8_GuestFramebufferActive(void)
     return g_fb_src && g_fb_locks != 0 && (g_present_seq - g_fb_lock_seq) <= GUEST_FB_IDLE_PRESENTS;
 }
 
-void d3d8_RequestScreenshot(const wchar_t *path) { (void)path; }
+/* The Metal backend (d3d8_gpu.c) saves the screenshot; without it (a headless build) the request is ignored. */
+void d3d8_gpu_request_screenshot(const char *path) __attribute__((weak));
+void d3d8_RequestScreenshot(const wchar_t *path)
+{
+    char buf[1024];
+    if (!path || !d3d8_gpu_request_screenshot) return;
+    if (wcstombs(buf, path, sizeof buf - 1) == (size_t)-1) return;
+    buf[sizeof buf - 1] = 0;
+    d3d8_gpu_request_screenshot(buf);
+}
 int  d3d8_ScreenshotPending(void)                { return 0; }
 
 void d3d8_SetDacPalette(const unsigned char lut[256][3]) { (void)lut; }
