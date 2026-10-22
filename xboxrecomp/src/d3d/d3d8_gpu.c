@@ -52,6 +52,9 @@ static SDL_GPUTextureFormat g_ds_fmt = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
 static SDL_GPUShader *g_vs, *g_fs;
 typedef struct Tex Tex;
 static int g_failed;
+/* time the GPU backend spends creating shaders and pipelines on demand (a first use of an effect hitches the frame it appears in) */
+static uint64_t g_cc_ns, g_cc_max_ns; static unsigned g_cc_n;
+static void cc_note(uint64_t t0) { uint64_t d = SDL_GetTicksNS() - t0; g_cc_ns += d; g_cc_n++; if (d > g_cc_max_ns) g_cc_max_ns = d; }
 static int g_rt_cleared;      /* has the target been cleared at least once (first frame starts black) */
 
 extern int nv2a_psh_msl;
@@ -111,7 +114,7 @@ static SDL_GPUShader *make_shader(SDL_GPUShaderStage stage, const char *entry, U
     ci.code = (const Uint8 *)g_msl; ci.code_size = sizeof g_msl;
     ci.entrypoint = entry; ci.format = SDL_GPU_SHADERFORMAT_MSL; ci.stage = stage;
     ci.num_uniform_buffers = uniforms; ci.num_samplers = samplers;
-    s = SDL_CreateGPUShader(g_dev, &ci);
+    { uint64_t c0 = SDL_GetTicksNS(); s = SDL_CreateGPUShader(g_dev, &ci); cc_note(c0); }
     if (!s) fprintf(stderr, "[GPU] shader %s failed: %s\n", entry, SDL_GetError());
     return s;
 }
@@ -279,7 +282,7 @@ cache_full:
     ct.blend_state.enable_color_write_mask = true;
     pi.target_info.color_target_descriptions = &ct; pi.target_info.num_color_targets = 1;
     pi.target_info.depth_stencil_format = g_ds_fmt; pi.target_info.has_depth_stencil_target = true;
-    p = SDL_CreateGPUGraphicsPipeline(g_dev, &pi);
+    { uint64_t c0 = SDL_GetTicksNS(); p = SDL_CreateGPUGraphicsPipeline(g_dev, &pi); cc_note(c0); }
     if (!p) fprintf(stderr, "[GPU] pipeline failed: %s\n", SDL_GetError());
     g_pc[g_npc].k = *k; g_pc[g_npc].p = p; g_npc++;     /* a failed creation is cached too (NULL): not retried every draw */
     return p;
@@ -751,7 +754,21 @@ static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int s
         if (gpu_out_draw(g_dev, cmd, src, sc, SDL_GetGPUSwapchainTextureFormat(g_dev, g_win), &dr, &hp)) return;
         g_hdr = 0;      /* the pass failed: back to the plain blit */
     }
-    (void)src_w; (void)src_h;
+    {   /* a picture drawn smaller than its place in the window: bicubic with a mild sharpen instead of the plain bilinear blit */
+        static int up_mode = -1; static float up_sharp = 0.35f;
+        if (up_mode < 0) {
+            const char *e = getenv("OT_UPSCALE");
+            up_mode = !(e && (!strcmp(e, "smooth") || !strcmp(e, "off") || !strcmp(e, "0")));
+            up_sharp = envf("OT_SHARPEN", 0.35f); if (up_sharp < 0.0f) up_sharp = 0.0f; if (up_sharp > 1.0f) up_sharp = 1.0f;
+        }
+        if (up_mode) {
+            SDL_Rect dr; double ar = shape > 0.5 ? shape : 4.0 / 3.0, wa = (double)w / (double)h; Uint32 dw = w, dh = h;
+            if (wa > ar) dw = (Uint32)((double)h * ar + 0.5); else dh = (Uint32)((double)w / ar + 0.5);
+            dr.x = (int)((w - dw) / 2); dr.y = (int)((h - dh) / 2); dr.w = (int)dw; dr.h = (int)dh;
+            if ((double)dw > (double)src_w * 1.05 &&
+                gpu_out_upscale(g_dev, cmd, src, src_w, src_h, sc, SDL_GetGPUSwapchainTextureFormat(g_dev, g_win), &dr, up_sharp)) return;
+        }
+    }
     memset(&bi, 0, sizeof bi);
     bi.source.texture = src; bi.source.w = (Uint32)src_w; bi.source.h = (Uint32)src_h;
     bi.destination.texture = sc;
@@ -933,6 +950,7 @@ static void present_now_inner(const uint8_t *movie_rgba, unsigned mw, unsigned m
         if (t0) fprintf(stderr, "[GPU] %.1f presents/s (%.1f ms/present in the backend: encode %.1f, swapchain wait %.1f, submit %.1f), %u shaders, %d pipelines\n",
                         300e9 / (double)(now - t0), (double)busy / 300e6, (double)g_t_encode / 300e6, (double)g_t_acquire / 300e6,
                         (double)g_t_submit / 300e6, g_npsh, g_npc);
+        if (g_cc_n) { fprintf(stderr, "[GPU]   %u shaders/pipelines created in this period: %.1f ms in all, the slowest %.1f ms\n", g_cc_n, (double)g_cc_ns / 1e6, (double)g_cc_max_ns / 1e6); g_cc_n = 0; g_cc_ns = g_cc_max_ns = 0; }
         {   /* the translator's time in draw_program (CPU vertex programs): per present */
             extern uint64_t pgraph_d3d11_draw_program_ns(uint64_t *calls, uint64_t *verts, uint64_t *vs_ns);
             static uint64_t pn, pc, pv, pvs; uint64_t c, v, vs, n = pgraph_d3d11_draw_program_ns(&c, &v, &vs);
@@ -1369,7 +1387,7 @@ int d3d8_nv2a_add_ps(unsigned long long key, const char *msl, int len)
     ci.code = (const Uint8 *)msl; ci.code_size = (size_t)len + 1;
     ci.entrypoint = "fs_psh"; ci.format = SDL_GPU_SHADERFORMAT_MSL; ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
     ci.num_uniform_buffers = 1; ci.num_samplers = 4;
-    e->s = SDL_CreateGPUShader(g_dev, &ci);
+    { uint64_t c0 = SDL_GetTicksNS(); e->s = SDL_CreateGPUShader(g_dev, &ci); cc_note(c0); }
     g_npsh++;
     if (!e->s) {                       /* the draw falls back to the plain vertex-colour shader */
         if (g_psh_fail++ < 4) {
@@ -1603,7 +1621,7 @@ int d3d8_nv2a_vsh_ready(const void *dv)
     ci.code = (const Uint8 *)src; ci.code_size = (size_t)len + 1;
     ci.entrypoint = "vs_prog"; ci.format = SDL_GPU_SHADERFORMAT_MSL; ci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
     ci.num_uniform_buffers = 2; ci.num_storage_buffers = 1;
-    e->s = SDL_CreateGPUShader(g_dev, &ci);
+    { uint64_t c0 = SDL_GetTicksNS(); e->s = SDL_CreateGPUShader(g_dev, &ci); cc_note(c0); }
     g_nvsh++;
     if (!e->s) {
         if (g_vsh_fail++ < 4) {

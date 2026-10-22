@@ -83,6 +83,33 @@ static const char k_msl[] =
     "        c *= t2 / top;\n"
     "    }\n"
     "    return float4(c, 1.0);\n"
+    "}\n"
+    /* The SDR upscaler: Catmull-Rom bicubic (five bilinear fetches), then a mild contrast-adaptive sharpen from the four neighbours
+     * (a Laplacian, kept between the neighbourhood's own min and max so it cannot ring). No colour change: gamma in, gamma out. */
+    "struct UU { float4 p; };   /* source width, source height, sharpness, 0 */\n"
+    "static float4 cr5(texture2d<float> t, float2 uv, float2 sz) {\n"
+    "    float2 pos = uv * sz, c = floor(pos - 0.5) + 0.5, f = pos - c;\n"
+    "    float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+    "    float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);\n"
+    "    float2 s12 = w1 + w2, off12 = w2 / s12;\n"
+    "    float2 t0 = (c - 1.0) / sz, t12 = (c + off12) / sz, t3 = (c + 2.0) / sz;\n"
+    "    float4 r = t.sample(Lin, float2(t12.x, t0.y)) * (s12.x * w0.y) + t.sample(Lin, float2(t0.x, t12.y)) * (w0.x * s12.y)\n"
+    "             + t.sample(Lin, t12) * (s12.x * s12.y) + t.sample(Lin, float2(t3.x, t12.y)) * (w3.x * s12.y)\n"
+    "             + t.sample(Lin, float2(t12.x, t3.y)) * (s12.x * w3.y);\n"
+    "    float wsum = s12.x * w0.y + w0.x * s12.y + s12.x * s12.y + w3.x * s12.y + s12.x * w3.y;\n"
+    "    return r / wsum;\n"
+    "}\n"
+    "fragment float4 up_ps(VO i [[stage_in]], constant UU &u [[buffer(0)]], texture2d<float> src [[texture(0)]]) {\n"
+    "    float2 sz = u.p.xy, px = 1.0 / sz;\n"
+    "    float4 c = cr5(src, i.uv, sz);\n"
+    "    if (u.p.z > 0.0) {\n"
+    "        float3 n = src.sample(Lin, i.uv + float2(0.0, -px.y)).rgb, s = src.sample(Lin, i.uv + float2(0.0, px.y)).rgb;\n"
+    "        float3 w = src.sample(Lin, i.uv + float2(-px.x, 0.0)).rgb, e = src.sample(Lin, i.uv + float2(px.x, 0.0)).rgb;\n"
+    "        float3 lo = min(min(n, s), min(w, e)), hi = max(max(n, s), max(w, e));\n"
+    "        float3 lap = c.rgb * 4.0 - (n + s + w + e);\n"
+    "        c.rgb = clamp(c.rgb + lap * (0.25 * u.p.z), min(lo, c.rgb), max(hi, c.rgb));\n"
+    "    }\n"
+    "    return float4(saturate(c.rgb), 1.0);\n"
     "}\n";
 
 float gpu_out_effective_headroom(float reported, float peak)
@@ -102,17 +129,17 @@ char *gpu_out_source(void)
 
 static struct {
     int failed;
-    SDL_GPUShader *vs, *ps, *ps_comp;
+    SDL_GPUShader *vs, *ps, *ps_comp, *ps_up;
     SDL_GPUSampler *smp;
-    SDL_GPUGraphicsPipeline *pipe[2], *pipe_comp[2];
+    SDL_GPUGraphicsPipeline *pipe[2], *pipe_comp[2], *pipe_up[2];
     SDL_GPUTextureFormat fmt[2];
     int n;
 } S;
 
-static SDL_GPUGraphicsPipeline *pipe_for(SDL_GPUDevice *dev, SDL_GPUTextureFormat fmt, int comp)
+static SDL_GPUGraphicsPipeline *pipe_for(SDL_GPUDevice *dev, SDL_GPUTextureFormat fmt, int comp)      /* comp: 0 colour pass, 1 scene pass, 2 upscaler */
 {
     int i;
-    for (i = 0; i < S.n; i++) if (S.fmt[i] == fmt) return comp ? S.pipe_comp[i] : S.pipe[i];
+    for (i = 0; i < S.n; i++) if (S.fmt[i] == fmt) return comp == 2 ? S.pipe_up[i] : comp ? S.pipe_comp[i] : S.pipe[i];
     if (S.n >= 2) return NULL;
     {
         SDL_GPUGraphicsPipelineCreateInfo pi; SDL_GPUColorTargetDescription ct;
@@ -127,11 +154,39 @@ static SDL_GPUGraphicsPipeline *pipe_for(SDL_GPUDevice *dev, SDL_GPUTextureForma
         S.pipe[S.n] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
         pi.fragment_shader = S.ps_comp;
         S.pipe_comp[S.n] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
-        if (!S.pipe[S.n] || !S.pipe_comp[S.n]) { fprintf(stderr, "[GPU] colour pass pipeline failed: %s\n", SDL_GetError()); return NULL; }
+        pi.fragment_shader = S.ps_up;
+        S.pipe_up[S.n] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+        if (!S.pipe[S.n] || !S.pipe_comp[S.n] || !S.pipe_up[S.n]) { fprintf(stderr, "[GPU] colour pass pipeline failed: %s\n", SDL_GetError()); return NULL; }
         S.fmt[S.n] = fmt;
         S.n++;
-        return comp ? S.pipe_comp[S.n - 1] : S.pipe[S.n - 1];
+        return comp == 2 ? S.pipe_up[S.n - 1] : comp ? S.pipe_comp[S.n - 1] : S.pipe[S.n - 1];
     }
+}
+
+/* Builds the shaders and the sampler shared by the passes of this module (once). */
+static int ensure_shared(SDL_GPUDevice *dev)
+{
+    char *code; SDL_GPUShaderCreateInfo ci; SDL_GPUSamplerCreateInfo si;
+    if (S.vs) return 1;
+    code = gpu_out_source();
+    if (!code) { S.failed = 1; return 0; }
+    memset(&ci, 0, sizeof ci);
+    ci.code = (const Uint8 *)code; ci.code_size = sizeof k_msl; ci.format = SDL_GPU_SHADERFORMAT_MSL;
+    ci.entrypoint = "out_vs"; ci.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+    S.vs = SDL_CreateGPUShader(dev, &ci);
+    ci.entrypoint = "out_ps"; ci.stage = SDL_GPU_SHADERSTAGE_FRAGMENT; ci.num_samplers = 1; ci.num_uniform_buffers = 1;
+    S.ps = SDL_CreateGPUShader(dev, &ci);
+    ci.entrypoint = "comp_ps";
+    S.ps_comp = SDL_CreateGPUShader(dev, &ci);
+    ci.entrypoint = "up_ps";
+    S.ps_up = SDL_CreateGPUShader(dev, &ci);
+    free(code);
+    memset(&si, 0, sizeof si);
+    si.min_filter = si.mag_filter = SDL_GPU_FILTER_LINEAR;
+    si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    S.smp = SDL_CreateGPUSampler(dev, &si);
+    if (!S.vs || !S.ps || !S.ps_comp || !S.ps_up || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
+    return 1;
 }
 
 int gpu_out_draw(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, SDL_GPUTexture *dst,
@@ -157,12 +212,14 @@ int gpu_out_draw(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *
         S.ps = SDL_CreateGPUShader(dev, &ci);
         ci.entrypoint = "comp_ps";
         S.ps_comp = SDL_CreateGPUShader(dev, &ci);
+        ci.entrypoint = "up_ps";
+        S.ps_up = SDL_CreateGPUShader(dev, &ci);
         free(code);
         memset(&si, 0, sizeof si);
         si.min_filter = si.mag_filter = SDL_GPU_FILTER_LINEAR;
         si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         S.smp = SDL_CreateGPUSampler(dev, &si);
-        if (!S.vs || !S.ps || !S.ps_comp || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
+        if (!S.vs || !S.ps || !S.ps_comp || !S.ps_up || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
     }
     pl = pipe_for(dev, dst_fmt, 0);
     if (!pl) { S.failed = 1; return 0; }
@@ -207,12 +264,14 @@ int gpu_out_scene_comp(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTex
             S.ps = SDL_CreateGPUShader(dev, &ci);
             ci.entrypoint = "comp_ps";
             S.ps_comp = SDL_CreateGPUShader(dev, &ci);
+            ci.entrypoint = "up_ps";
+            S.ps_up = SDL_CreateGPUShader(dev, &ci);
             free(code);
             memset(&si, 0, sizeof si);
             si.min_filter = si.mag_filter = SDL_GPU_FILTER_LINEAR;
             si.address_mode_u = si.address_mode_v = si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
             S.smp = SDL_CreateGPUSampler(dev, &si);
-            if (!S.vs || !S.ps || !S.ps_comp || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
+            if (!S.vs || !S.ps || !S.ps_comp || !S.ps_up || !S.smp) { fprintf(stderr, "[GPU] colour pass shaders failed: %s\n", SDL_GetError()); S.failed = 1; return 0; }
         }
     }
     pl = pipe_for(dev, fmt, 1);
@@ -221,6 +280,36 @@ int gpu_out_scene_comp(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTex
     ct.texture = dst; ct.load_op = SDL_GPU_LOADOP_DONT_CARE; ct.store_op = SDL_GPU_STOREOP_STORE;
     rp = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
     SDL_BindGPUGraphicsPipeline(rp, pl);
+    SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
+    b.texture = src; b.sampler = S.smp;
+    SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
+    SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(rp);
+    return 1;
+}
+
+/* The SDR upscaler (see up_ps): `src` (src_w x src_h, gamma encoded) into the rectangle `dest` of `dst` (rest cleared to black), bicubic with
+ * `sharpness` (0 = none .. 1). No render pass may be open. Returns 1 if drawn (0: the caller falls back to a plain blit). */
+int gpu_out_upscale(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int src_w, int src_h, SDL_GPUTexture *dst,
+                    SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, float sharpness)
+{
+    SDL_GPUColorTargetInfo ct;
+    SDL_GPUTextureSamplerBinding b;
+    SDL_GPURenderPass *rp;
+    SDL_GPUViewport vp;
+    SDL_GPUGraphicsPipeline *pl;
+    float u[4];
+    if (S.failed || !dev || !src || !dst || src_w <= 0 || src_h <= 0) return 0;
+    if (!ensure_shared(dev)) return 0;
+    pl = pipe_for(dev, dst_fmt, 2);
+    if (!pl) return 0;
+    memset(&ct, 0, sizeof ct);
+    ct.texture = dst; ct.load_op = SDL_GPU_LOADOP_CLEAR; ct.store_op = SDL_GPU_STOREOP_STORE;
+    rp = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
+    SDL_BindGPUGraphicsPipeline(rp, pl);
+    vp.x = (float)dest->x; vp.y = (float)dest->y; vp.w = (float)dest->w; vp.h = (float)dest->h; vp.min_depth = 0.0f; vp.max_depth = 1.0f;
+    SDL_SetGPUViewport(rp, &vp);
+    u[0] = (float)src_w; u[1] = (float)src_h; u[2] = sharpness; u[3] = 0.0f;
     SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
     b.texture = src; b.sampler = S.smp;
     SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);

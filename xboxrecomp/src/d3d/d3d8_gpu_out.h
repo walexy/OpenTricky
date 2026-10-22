@@ -30,4 +30,8 @@ int gpu_out_draw(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *
 int gpu_out_scene_comp(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, SDL_GPUTexture *dst,
                        SDL_GPUTextureFormat fmt, float amount);
 
+/* The SDR upscaler: Catmull-Rom bicubic plus a mild anti-ringing sharpen (0..1), `src` into the rectangle `dest` of `dst`. */
+int gpu_out_upscale(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int src_w, int src_h, SDL_GPUTexture *dst,
+                    SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, float sharpness);
+
 #endif

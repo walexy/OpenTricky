@@ -185,6 +185,7 @@ final class Model: ObservableObject {
     @Published var shape = ""
     @Published var windowH = ""
     @Published var cursorHide = ""
+    @Published var upscale = ""
     @Published var renderH = ""
     @Published var fullscreen = false
     @Published var fps = ""
@@ -214,6 +215,7 @@ final class Model: ObservableObject {
                                 Choice(value: "1080", label: "Extra large (1080)")]
     static let cursorChoices = [Choice(value: "", label: "After 2 seconds (default)"), Choice(value: "1000", label: "After 1 second"), Choice(value: "5000", label: "After 5 seconds"),
                                 Choice(value: "0", label: "Never")]
+    static let upscaleChoices = [Choice(value: "", label: "Sharp (default)"), Choice(value: "smooth", label: "Smooth (plain)")]
     static let fpsChoices = [Choice(value: "", label: "60 (original)"), Choice(value: "120", label: "120"), Choice(value: "144", label: "144"), Choice(value: "240", label: "240"),
                              Choice(value: "monitor", label: "Match my display"), Choice(value: "0", label: "Unlimited")]
     static let vsyncs = [Choice(value: "", label: "Default"), Choice(value: "vsync", label: "On"), Choice(value: "adaptive", label: "Adaptive"), Choice(value: "off", label: "Off")]
@@ -230,6 +232,7 @@ final class Model: ObservableObject {
         let s = kv.get("OT_SHAPE") ?? ""; shape = s == "auto" ? "" : s
         renderH = kv.get("OT_RENDER_H") ?? ""
         windowH = kv.get("OT_WINDOW_H") ?? ""; if windowH == "900" { windowH = "" }
+        upscale = kv.get("OT_UPSCALE") ?? ""; if upscale == "sharp" { upscale = "" }
         cursorHide = kv.get("OT_CURSOR_HIDE_MS") ?? ""; if cursorHide == "2000" { cursorHide = "" }
         fullscreen = on(kv.get("OT_FULLSCREEN"))
         fps = kv.get("OT_FPS") ?? ""; if fps == "60" { fps = "" }
@@ -251,6 +254,7 @@ final class Model: ObservableObject {
         k.set("OT_RENDER_H", renderH.isEmpty ? nil : renderH)
         k.set("OT_WINDOW_H", windowH.isEmpty ? nil : windowH)
         k.set("OT_CURSOR_HIDE_MS", cursorHide.isEmpty ? nil : cursorHide)
+        k.set("OT_UPSCALE", upscale.isEmpty ? nil : upscale)
         k.set("OT_FULLSCREEN", fullscreen ? "1" : nil)
         k.set("OT_FPS", fps.isEmpty ? nil : fps)
         k.set("OT_VSYNC", vsync.isEmpty ? nil : vsync)
@@ -295,6 +299,7 @@ struct SettingsView: View {
                 Section("Display") {
                     Pick(title: "Screen shape", choices: Model.shapes, value: $m.shape)
                     Pick(title: "Render resolution", choices: Model.heights, value: $m.renderH)
+                    Pick(title: "Upscaling when the window is larger", choices: Model.upscaleChoices, value: $m.upscale)
                     Pick(title: "Window size", choices: Model.windowHeights, value: $m.windowH)
                     Toggle("Start in full screen", isOn: $m.fullscreen)
                     Pick(title: "Hide the mouse pointer", choices: Model.cursorChoices, value: $m.cursorHide)
