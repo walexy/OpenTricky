@@ -2288,9 +2288,16 @@ static void occ_clear(void)
 static void occ_enable(int on)
 {
     if (on && g_occ_open < 0) {
-        int h = d3d8_OcclusionBegin(), s;
+        int h = d3d8_OcclusionBegin(), s, k;
         if (h < 0) { g_occ_dropped++; return; }
-        s = h;                                    /* one span slot per query handle */
+        /* A span slot is a free entry of the table, not the query handle itself: the handle is whatever the backend numbers its queries with (the
+         * Metal backend counts up to 32767), and indexing the 256-entry table with it overran it and corrupted the memory behind it. */
+        s = -1;
+        for (k = 0; k < 256; k++) {
+            int c = (h + k) & 255;
+            if (g_occ_span[c].refs <= 0) { s = c; break; }
+        }
+        if (s < 0) { d3d8_OcclusionRelease(h); g_occ_dropped++; return; }
         g_occ_span[s].h = h; g_occ_span[s].refs = 1; g_occ_span[s].ready = 0; g_occ_span[s].n = 0;
         g_occ_open = s;
     } else if (!on && g_occ_open >= 0) {
