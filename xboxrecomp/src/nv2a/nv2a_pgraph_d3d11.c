@@ -456,6 +456,29 @@ void pgraph_d3d11_tex_binding(int stage, uint32_t *offset, uint32_t *format)
     *format = stage >= 0 && stage < 4 ? g_pg.tex[stage].format : 0;
 }
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+/* Is [p, p + n) readable host memory? A vertex array the title points at can lie in a part of the guest window that has no memory behind it (the
+ * hole between the RAM mirror and the GPU aperture): reading it is a SIGSEGV in this thread. Pages found readable are remembered (a direct-mapped
+ * table of 16 KB pages), so the check costs a system call only the first time a page is used. */
+static int pg_readable(const uint8_t *p, uint32_t n)
+{
+    static uintptr_t ok[4096];
+    uintptr_t a = (uintptr_t)p & ~(uintptr_t)0x3FFF, e = ((uintptr_t)p + n + 0x3FFF) & ~(uintptr_t)0x3FFF;
+    for (; a < e; a += 0x4000) {
+        uintptr_t slot = (a >> 14) & 4095u;
+        uint8_t b; mach_vm_size_t got = 0;
+        if (ok[slot] == a) continue;
+        if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)a, 1, (mach_vm_address_t)(uintptr_t)&b, &got) != KERN_SUCCESS) return 0;
+        ok[slot] = a;
+    }
+    return 1;
+}
+#else
+static int pg_readable(const uint8_t *p, uint32_t n) { (void)p; (void)n; return 1; }
+#endif
+
 static const uint8_t *va_ptr(uint32_t offset, uint32_t need)
 {
     uint32_t off = offset & 0x0FFFFFFFu;
@@ -465,6 +488,13 @@ static const uint8_t *va_ptr(uint32_t offset, uint32_t need)
         return NULL;
     if (off >= g_pg_mem_size || need > g_pg_mem_size - off)
         return NULL;
+    if (!pg_readable(g_pg_mem_base + off, need)) {
+        static int told;
+        if (told++ < 6)
+            fprintf(stderr, "[PGRAPH] vertex data at offset 0x%08X (+%u bytes) is not readable (memory base %p, window %u bytes): not drawn\n",
+                    offset, need, (const void *)g_pg_mem_base, g_pg_mem_size);
+        return NULL;
+    }
     return g_pg_mem_base + off;
 }
 
