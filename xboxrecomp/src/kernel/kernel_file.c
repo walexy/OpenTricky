@@ -1170,7 +1170,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     entry->FileAttributes = ctx->find_data.dwFileAttributes;
     entry->FileNameLength = name_len;
     {
-        ULONG header_size = (ULONG)((ULONG_PTR)&((PXBOX_FILE_DIRECTORY_INFORMATION)0)->FileName);
+        ULONG header_size = (ULONG)offsetof(XBOX_FILE_DIRECTORY_INFORMATION, FileName);
         if (name_len > 0 && (header_size + name_len) <= Length)
             memcpy(entry->FileName, filename_ansi, name_len);
         IoStatusBlock->Status = STATUS_SUCCESS;
@@ -1975,7 +1975,7 @@ NTSTATUS __stdcall xbox_NtQueryDirectoryFile(
     entry->FileAttributes = mode_to_xbox_attrs(st.st_mode);
     entry->FileNameLength = name_len;
 
-    ULONG header_size = (ULONG)((ULONG_PTR)&((PXBOX_FILE_DIRECTORY_INFORMATION)0)->FileName);
+    ULONG header_size = (ULONG)offsetof(XBOX_FILE_DIRECTORY_INFORMATION, FileName);
     if (name_len > 0 && (header_size + (ULONG)name_len) <= Length)
         memcpy(entry->FileName, de->d_name, name_len);
     IoStatusBlock->Status = STATUS_SUCCESS;
