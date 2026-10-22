@@ -58,3 +58,5 @@ In the game: F11 / Alt+Enter full screen; Cmd+1..4 window size, F9 / F10 smaller
 Cmd+, or F2, or the controller's Guide / PlayStation button (or Back+Start, i.e. Share+Options, together) open the settings window.
 The macOS menu bar has **SSX Tricky › Settings… (Cmd+,)** and a **Game** menu (full screen, window sizes, screenshot, folder) -- port/src/ot_menu_macos.m.
 Not done: a "Settings" entry inside the game's own 3D menus (that needs a patch to the recompiled menu code; see MACOS_PORT_PLAN.md).
+
+The mouse pointer hides after 2 seconds without movement and returns when the mouse moves (OT_CURSOR_HIDE_MS: 0 = never; also in the settings window).

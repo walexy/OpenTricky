@@ -337,6 +337,7 @@ static void open_settings(SDL_Window *win)
 }
 #endif
 
+static volatile int s_mouse_moved;
 int ot_window_run(int (*guest)(void *), void *arg)
 {
     guest_t g = { guest, arg, 0, 0 };
@@ -438,6 +439,7 @@ int ot_window_run(int (*guest)(void *), void *arg)
         SDL_Event ev;
         int have;
         while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_MOUSE_MOTION || ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev.type == SDL_EVENT_MOUSE_WHEEL) s_mouse_moved = 1;
             if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) quit = 1;
             else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat &&
                      (ev.key.key == SDLK_F11 || (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))))
@@ -484,6 +486,16 @@ int ot_window_run(int (*guest)(void *), void *arg)
                 int k;
                 for (k = 0; k < 4; k++)
                     if (s_gp[k] && !SDL_GamepadConnected(s_gp[k])) { SDL_CloseGamepad(s_gp[k]); s_gp[k] = NULL; fprintf(stderr, "[INPUT] pad %d removed\n", k); }
+            }
+        }
+        {   /* the mouse pointer hides after OT_CURSOR_HIDE_MS (default 2000, 0 = never) without movement, and returns when the mouse moves */
+            static int hide_ms = -1, hidden; static Uint64 last_move;
+            Uint64 now = SDL_GetTicks();
+            if (hide_ms < 0) { const char *e = getenv("OT_CURSOR_HIDE_MS"); hide_ms = (e && e[0]) ? atoi(e) : 2000; if (hide_ms < 0) hide_ms = 0; last_move = now; }
+            if (hide_ms > 0) {
+                if (s_mouse_moved) { s_mouse_moved = 0; last_move = now; if (hidden) { SDL_ShowCursor(); hidden = 0; } }
+                else if (!hidden && now - last_move >= (Uint64)hide_ms && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS)) { SDL_HideCursor(); hidden = 1; }
+                else if (hidden && !(SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS)) { SDL_ShowCursor(); hidden = 0; last_move = now; }
             }
         }
         input_snapshot(win);
