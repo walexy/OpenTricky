@@ -433,6 +433,7 @@ void nv2a_drawlog_arm(int frames)
 #define PG_SUBST_TAG 0x0FF00000u
 static const uint8_t *g_subst_host;
 static uint32_t g_subst_size;
+static int g_subst_on;      /* set only while subst_draw's draws run: the two above are not trusted outside it */
 static pgraph_draw_subst_fn g_subst_fn;
 /* Flat-colour pass of a substituted draw's overlay: the pixel shader returns
  * g_flat_rgba (debug views only). */
@@ -482,7 +483,7 @@ static int pg_readable(const uint8_t *p, uint32_t n) { (void)p; (void)n; return 
 static const uint8_t *va_ptr(uint32_t offset, uint32_t need)
 {
     uint32_t off = offset & 0x0FFFFFFFu;
-    if (g_subst_host && off - PG_SUBST_TAG < g_subst_size)
+    if (g_subst_on && g_subst_host && off - PG_SUBST_TAG < g_subst_size)
         return need <= g_subst_size - (off - PG_SUBST_TAG) ? g_subst_host + (off - PG_SUBST_TAG) : NULL;
     if (!g_pg_mem_base || !g_pg_mem_size || need == 0)
         return NULL;
@@ -1957,8 +1958,8 @@ static void va_fetch4(int attr, uint32_t idx, float o[4])
     if ((uintptr_t)p < 0x100000000ull) {       /* not guest memory: see va_ptr (never seen to happen; reported if it does) */
         static int told;
         if (told++ < 6)
-            fprintf(stderr, "[PGRAPH] va_fetch4: attribute %d pointer %p (offset 0x%08X idx %u stride %u, memory base %p)\n", attr, (const void *)p,
-                    g_pg.vattr[attr].offset, idx, stride, (const void *)g_pg_mem_base);
+            fprintf(stderr, "[PGRAPH] va_fetch4: attribute %d pointer %p (offset 0x%08X idx %u stride %u, memory base %p, subst %d host %p size %u)\n", attr, (const void *)p,
+                    g_pg.vattr[attr].offset, idx, stride, (const void *)g_pg_mem_base, g_subst_on, (const void *)g_subst_host, g_subst_size);
         return;
     }
     if (g_plag.patch && stride == 0) {  /* XBOX_PUMPLAG: the block as the title drew the part */
@@ -4232,6 +4233,7 @@ static int subst_draw(void)
     }
     g_subst_host = sub.host;
     g_subst_size = sub.size;
+    g_subst_on = 1;
     {
         uint32_t st;
         for (st = 0; st < 4; st++) {
@@ -4304,6 +4306,7 @@ static int subst_draw(void)
         g_pg.blend_enable = be; g_pg.blend_sfactor = sf; g_pg.blend_dfactor = df;
         g_pg.depth_mask = dm; g_pg.cull_enable = cu;
     }
+    g_subst_on = 0;
     g_subst_host = NULL;
     g_subst_size = 0;
     for (a = 0; a < 16; a++) g_pg.vattr[a].offset = saved[a];
