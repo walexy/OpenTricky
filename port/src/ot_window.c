@@ -338,6 +338,17 @@ static void open_settings(SDL_Window *win)
 #endif
 
 static volatile int s_mouse_moved;
+
+/* Controller vibration for the title's XInputSetState (called from the game thread): the pad in that slot rumbles for a second unless the title
+ * refreshes or stops it sooner. OT_RUMBLE=0 turns it off. Returns 1 if a pad took it. */
+int ot_window_rumble(int port, unsigned short low, unsigned short high)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OT_RUMBLE"); on = !(e && e[0] == '0'); }
+    if (port < 0 || port >= 4 || !s_gp[port]) return 0;
+    if (!on) return 1;
+    return SDL_RumbleGamepad(s_gp[port], low, high, low || high ? 1000 : 0) ? 1 : 0;
+}
 int ot_window_run(int (*guest)(void *), void *arg)
 {
     guest_t g = { guest, arg, 0, 0 };

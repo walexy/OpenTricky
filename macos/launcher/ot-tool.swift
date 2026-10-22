@@ -187,6 +187,7 @@ final class Model: ObservableObject {
     @Published var cursorHide = ""
     @Published var upscale = ""
     @Published var aniso = ""
+    @Published var rumble = true
     @Published var renderH = ""
     @Published var fullscreen = false
     @Published var fps = ""
@@ -235,6 +236,7 @@ final class Model: ObservableObject {
         let s = kv.get("OT_SHAPE") ?? ""; shape = s == "auto" ? "" : s
         renderH = kv.get("OT_RENDER_H") ?? ""
         windowH = kv.get("OT_WINDOW_H") ?? ""; if windowH == "900" { windowH = "" }
+        rumble = kv.get("OT_RUMBLE") != "0"
         aniso = kv.get("OT_ANISO") ?? ""; if aniso == "4" { aniso = "" }
         upscale = kv.get("OT_UPSCALE") ?? ""; if upscale == "sharp" { upscale = "" }
         cursorHide = kv.get("OT_CURSOR_HIDE_MS") ?? ""; if cursorHide == "2000" { cursorHide = "" }
@@ -260,6 +262,7 @@ final class Model: ObservableObject {
         k.set("OT_CURSOR_HIDE_MS", cursorHide.isEmpty ? nil : cursorHide)
         k.set("OT_UPSCALE", upscale.isEmpty ? nil : upscale)
         k.set("OT_ANISO", aniso.isEmpty ? nil : aniso)
+        k.set("OT_RUMBLE", rumble ? nil : "0")
         k.set("OT_FULLSCREEN", fullscreen ? "1" : nil)
         k.set("OT_FPS", fps.isEmpty ? nil : fps)
         k.set("OT_VSYNC", vsync.isEmpty ? nil : vsync)
@@ -332,6 +335,7 @@ struct SettingsView: View {
                 }
                 Section("Textures and controls") {
                     Pick(title: "Button pictures", choices: Model.buttonSets, value: $m.buttons)
+                    Toggle("Controller vibration", isOn: $m.rumble)
                     HStack {
                         Text("HD texture pack"); Spacer()
                         Text(m.hdPath.isEmpty ? "none" : (m.hdPath as NSString).lastPathComponent).foregroundStyle(.secondary).lineLimit(1)
