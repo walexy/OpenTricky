@@ -32,6 +32,6 @@ int gpu_out_scene_comp(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTex
 
 /* The SDR upscaler: Catmull-Rom bicubic plus a mild anti-ringing sharpen (0..1), `src` into the rectangle `dest` of `dst`. */
 int gpu_out_upscale(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int src_w, int src_h, SDL_GPUTexture *dst,
-                    SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, float sharpness);
+                    SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, float sharpness, int edge);   /* edge: 1 = edge-adaptive (FSR 1 style), 0 = bicubic */
 
 #endif

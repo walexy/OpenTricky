@@ -12,3 +12,8 @@
 - Netplay (port/src/netplay, XBOX_NET): initialises on macOS ("[NET] active") but is a localhost-only prototype; with host + guest both started into a race by
   `macos/tests/drive.py` both instances closed ("[WINDOW] closed: exiting") when the race loaded. Two plain instances side by side run fine, so it is netplay-specific; not investigated further.
 - Upstream PR: text in macos/UPSTREAM_PR.md; not opened (it is a public action on someone else's repository).
+
+## 2026-10-21: edge-adaptive upscaling
+`OT_UPSCALE=edge` (the default; `sharp` = bicubic, `smooth` = the plain blit) adds an FSR 1 style filter to the SDR final pass (`easu` in d3d8_gpu_out.c, an original
+implementation of the idea): a 4x4 patch gives the local gradient, the Lanczos-2 shaped kernel is stretched along the edge, the result is held inside the four nearest texels,
+then the same mild unsharp (OT_SHARPEN). Seen against `smooth` on the title menu (480p into a 900p window): cleaner outlines and snowflake detail, no ringing.

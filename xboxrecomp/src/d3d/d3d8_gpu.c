@@ -755,10 +755,10 @@ static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int s
         g_hdr = 0;      /* the pass failed: back to the plain blit */
     }
     {   /* a picture drawn smaller than its place in the window: bicubic with a mild sharpen instead of the plain bilinear blit */
-        static int up_mode = -1; static float up_sharp = 0.35f;
+        static int up_mode = -1; static float up_sharp = 0.35f;     /* 0 smooth (plain blit), 1 sharp bicubic, 2 edge-adaptive */
         if (up_mode < 0) {
             const char *e = getenv("OT_UPSCALE");
-            up_mode = !(e && (!strcmp(e, "smooth") || !strcmp(e, "off") || !strcmp(e, "0")));
+            up_mode = (e && (!strcmp(e, "smooth") || !strcmp(e, "off") || !strcmp(e, "0"))) ? 0 : (e && !strcmp(e, "sharp")) ? 1 : 2;
             up_sharp = envf("OT_SHARPEN", 0.35f); if (up_sharp < 0.0f) up_sharp = 0.0f; if (up_sharp > 1.0f) up_sharp = 1.0f;
         }
         if (up_mode) {
@@ -766,7 +766,7 @@ static void blit_to_window(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int s
             if (wa > ar) dw = (Uint32)((double)h * ar + 0.5); else dh = (Uint32)((double)w / ar + 0.5);
             dr.x = (int)((w - dw) / 2); dr.y = (int)((h - dh) / 2); dr.w = (int)dw; dr.h = (int)dh;
             if ((double)dw > (double)src_w * 1.05 &&
-                gpu_out_upscale(g_dev, cmd, src, src_w, src_h, sc, SDL_GetGPUSwapchainTextureFormat(g_dev, g_win), &dr, up_sharp)) return;
+                gpu_out_upscale(g_dev, cmd, src, src_w, src_h, sc, SDL_GetGPUSwapchainTextureFormat(g_dev, g_win), &dr, up_sharp, up_mode == 2)) return;
         }
     }
     memset(&bi, 0, sizeof bi);

@@ -99,8 +99,51 @@ static const char k_msl[] =
     "    float wsum = s12.x * w0.y + w0.x * s12.y + s12.x * s12.y + w3.x * s12.y + s12.x * w3.y;\n"
     "    return r / wsum;\n"
     "}\n"
+    /* Edge-adaptive upscaling in the manner of FSR 1's EASU (an original implementation of the idea): the local gradient of a 4x4 patch gives an edge
+     * direction and strength; the reconstruction kernel (a Lanczos-2 shaped weight) is stretched along the edge, so edges stay straight and sharp instead of
+     * stair-stepping, and the result is held inside the range of the four nearest texels (no ringing). */
+    "static float ea_luma(float3 c) { return c.g + 0.5 * (c.r + c.b); }\n"
+    "static float3 ea_tap(texture2d<float> t, int2 p, int2 hi) { return t.read(uint2(clamp(p, int2(0), hi))).rgb; }\n"
+    "static float4 easu(texture2d<float> t, float2 uv, float2 sz) {\n"
+    "    int2 hi = int2(sz) - 1;\n"
+    "    float2 pos = uv * sz - 0.5, bf = floor(pos), f = pos - bf; int2 b = int2(bf);\n"
+    "    float3 c[16]; float l[16];\n"
+    "    for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) { c[y * 4 + x] = ea_tap(t, b + int2(x - 1, y - 1), hi); l[y * 4 + x] = ea_luma(c[y * 4 + x]); }\n"
+    "    float wt[4] = { (1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y };\n"
+    "    float gx = 0.0, gy = 0.0;\n"
+    "    for (int k = 0; k < 4; k++) {\n"
+    "        int ix = 1 + (k & 1), iy = 1 + (k >> 1);\n"
+    "        gx += wt[k] * (l[iy * 4 + ix + 1] - l[iy * 4 + ix - 1]);\n"
+    "        gy += wt[k] * (l[(iy + 1) * 4 + ix] - l[(iy - 1) * 4 + ix]);\n"
+    "    }\n"
+    "    float g2 = gx * gx + gy * gy;\n"
+    "    float2 dir = g2 > 1e-6 ? float2(gx, gy) * rsqrt(g2) : float2(1.0, 0.0);\n"
+    "    float2 perp = float2(-dir.y, dir.x);\n"
+    "    float str = saturate(sqrt(g2) * 2.0);\n"
+    "    float along = mix(1.0, 0.45, str);          /* distances along the edge count less: the kernel reaches further along it */\n"
+    "    float3 acc = float3(0.0); float ws = 0.0;\n"
+    "    for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) {\n"
+    "        float2 d = float2(float(x - 1), float(y - 1)) - f;\n"
+    "        float2 q = float2(dot(d, dir), dot(d, perp) * along);\n"
+    "        float d2 = min(dot(q, q), 4.0);\n"
+    "        float a = 0.4 * d2 - 1.0, bq = 0.25 * d2 - 1.0;\n"
+    "        float w = (1.5625 * a * a - 0.5625) * bq * bq;\n"
+    "        acc += c[y * 4 + x] * w; ws += w;\n"
+    "    }\n"
+    "    float3 r = acc / max(ws, 1e-4);\n"
+    "    float3 lo = min(min(c[5], c[6]), min(c[9], c[10])), hi4 = max(max(c[5], c[6]), max(c[9], c[10]));\n"
+    "    return float4(clamp(r, lo, hi4), 1.0);\n"
+    "}\n"
     "fragment float4 up_ps(VO i [[stage_in]], constant UU &u [[buffer(0)]], texture2d<float> src [[texture(0)]]) {\n"
     "    float2 sz = u.p.xy, px = 1.0 / sz;\n"
+    "    if (u.p.w > 0.5) {   /* edge-adaptive */\n"
+    "        float4 e = easu(src, i.uv, sz);\n"
+    "        if (u.p.z > 0.0) {   /* the same mild unsharp as below, against the plain bilinear reading */\n"
+    "            float3 bl = src.sample(Lin, i.uv).rgb;\n"
+    "            e.rgb = saturate(e.rgb + (e.rgb - bl) * (0.5 * u.p.z));\n"
+    "        }\n"
+    "        return float4(saturate(e.rgb), 1.0);\n"
+    "    }\n"
     "    float4 c = cr5(src, i.uv, sz);\n"
     "    if (u.p.z > 0.0) {\n"
     "        float3 n = src.sample(Lin, i.uv + float2(0.0, -px.y)).rgb, s = src.sample(Lin, i.uv + float2(0.0, px.y)).rgb;\n"
@@ -291,7 +334,7 @@ int gpu_out_scene_comp(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTex
 /* The SDR upscaler (see up_ps): `src` (src_w x src_h, gamma encoded) into the rectangle `dest` of `dst` (rest cleared to black), bicubic with
  * `sharpness` (0 = none .. 1). No render pass may be open. Returns 1 if drawn (0: the caller falls back to a plain blit). */
 int gpu_out_upscale(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *src, int src_w, int src_h, SDL_GPUTexture *dst,
-                    SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, float sharpness)
+                    SDL_GPUTextureFormat dst_fmt, const SDL_Rect *dest, float sharpness, int edge)
 {
     SDL_GPUColorTargetInfo ct;
     SDL_GPUTextureSamplerBinding b;
@@ -309,7 +352,7 @@ int gpu_out_upscale(SDL_GPUDevice *dev, SDL_GPUCommandBuffer *cmd, SDL_GPUTextur
     SDL_BindGPUGraphicsPipeline(rp, pl);
     vp.x = (float)dest->x; vp.y = (float)dest->y; vp.w = (float)dest->w; vp.h = (float)dest->h; vp.min_depth = 0.0f; vp.max_depth = 1.0f;
     SDL_SetGPUViewport(rp, &vp);
-    u[0] = (float)src_w; u[1] = (float)src_h; u[2] = sharpness; u[3] = 0.0f;
+    u[0] = (float)src_w; u[1] = (float)src_h; u[2] = sharpness; u[3] = edge ? 1.0f : 0.0f;
     SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
     b.texture = src; b.sampler = S.smp;
     SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
