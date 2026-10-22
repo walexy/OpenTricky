@@ -69,3 +69,10 @@ The mouse pointer hides after 2 seconds without movement and returns when the mo
 The app carries SDL3, sdl2-compat and OpenSSL in Contents/Frameworks (no Homebrew needed), the main executable is a signed stub (`stub.c`)
 that starts `Resources/launcher.sh`, and the game keeps its files in ~/Library/Application Support/OpenTricky (`OT_HOME_DIR`).
 One-time setup for notarization: `xcrun notarytool store-credentials opentricky --apple-id <your id> --team-id <TEAMID> --password <app-specific password>`.
+
+## Controls, save history, conflicts, diagnostics (settings window)
+- **Controls**: keyboard keys and controller buttons for each PlayStation-named button, written to `settings.ini` ([Keyboard], [Controller]); the app applies them at start.
+- **Save history**: after each game that changed a save, a snapshot goes to `save-history/` (the last 20); the window restores one (what it replaces is kept in `sync-backups/`).
+- **Conflicts**: a setting or save changed on two Macs since the last sync keeps the newer one, keeps the other in `sync-backups/`, and the next start says so once.
+- **Copy diagnostics**: version, system, settings, last crash report and the end of the log, on the clipboard for a bug report.
+- Command line: `ot-tool restore <snapshot>`, `ot-tool diagnostics`.

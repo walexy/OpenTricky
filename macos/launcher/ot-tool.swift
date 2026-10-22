@@ -23,9 +23,10 @@ enum Store {
     static let cloud = cloudDocs.appendingPathComponent("OpenTricky")
     static let settingsFile = local.appendingPathComponent("display.env")
     static let prefsFile = local.appendingPathComponent("launcher-prefs.txt")      // this machine only, not synced
+    static let iniFile = local.appendingPathComponent("settings.ini")             // the game's own settings file ([Keyboard] and [Controller] bindings)
     static let discFile = local.appendingPathComponent("disc-image.txt")           // this machine only, not synced
     /// what is mirrored to iCloud: paths relative to the root
-    static let synced = ["display.env", "hdd"]
+    static let synced = ["display.env", "settings.ini", "hdd"]
 
     static var cloudAvailable: Bool {
         var isDir: ObjCBool = false
@@ -65,6 +66,70 @@ struct KV {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
+}
+
+// MARK: - settings.ini (key and button bindings)
+
+struct Ini {
+    var lines: [String]
+    init(url: URL) { lines = ((try? String(contentsOf: url, encoding: .utf8)) ?? "").replacingOccurrences(of: "\r", with: "").components(separatedBy: "\n"); if lines.last == "" { lines.removeLast() } }
+    private func sectionRange(_ sec: String) -> Range<Int>? {
+        guard let s = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("[\(sec)]") == .orderedSame }) else { return nil }
+        var e = lines.count
+        for i in (s + 1)..<lines.count where lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("[") { e = i; break }
+        return s..<e
+    }
+    func get(_ sec: String, _ key: String) -> String? {
+        guard let r = sectionRange(sec) else { return nil }
+        for i in r.dropFirst() {
+            let l = lines[i].trimmingCharacters(in: .whitespaces)
+            if l.hasPrefix(";") || l.hasPrefix("#") { continue }
+            if let eq = l.firstIndex(of: "="), l[..<eq].trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(key) == .orderedSame {
+                return String(l[l.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+    /// nil removes the key (the game's default applies); the rest of the file, comments included, is kept
+    mutating func set(_ sec: String, _ key: String, _ value: String?) {
+        if let r = sectionRange(sec) {
+            for i in r.dropFirst() {
+                let l = lines[i].trimmingCharacters(in: .whitespaces)
+                if l.hasPrefix(";") || l.hasPrefix("#") { continue }
+                if let eq = l.firstIndex(of: "="), l[..<eq].trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(key) == .orderedSame {
+                    if let v = value { lines[i] = "\(key)=\(v)" } else { lines.remove(at: i) }
+                    return
+                }
+            }
+            if let v = value { lines.insert("\(key)=\(v)", at: r.upperBound) }
+        } else if let v = value {
+            if let last = lines.last, !last.isEmpty { lines.append("") }
+            lines.append("[\(sec)]"); lines.append("\(key)=\(v)")
+        }
+    }
+    func write(to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
+enum Bindings {
+    /// name in settings.ini, label, default key, default controller input
+    static let keyRows: [(String, String, String, String)] = [
+        ("Cross", "Cross (A)", "Space", "A"), ("Circle", "Circle (B)", "Escape", "B"), ("Square", "Square (X)", "C", "X"), ("Triangle", "Triangle (Y)", "V", "Y"),
+        ("L1", "L1 (white)", "F", "LB"), ("R1", "R1 (black)", "R", "RB"), ("L2", "L2 (left trigger)", "Q", "LT"), ("R2", "R2 (right trigger)", "E", "RT"),
+        ("Start", "Start", "Enter", "Start"), ("Select", "Select (back)", "Tab", "Back"), ("L3", "L3 (left stick press)", "X", "LS"), ("R3", "R3 (right stick press)", "None", "RS"),
+        ("DpadUp", "D-pad up", "Up", "DpadUp"), ("DpadDown", "D-pad down", "Down", "DpadDown"), ("DpadLeft", "D-pad left", "Left", "DpadLeft"), ("DpadRight", "D-pad right", "Right", "DpadRight"),
+    ]
+    static let stickRows: [(String, String, String)] = [
+        ("LeftStickUp", "Left stick up", "Up"), ("LeftStickDown", "Left stick down", "Down"), ("LeftStickLeft", "Left stick left", "Left"), ("LeftStickRight", "Left stick right", "Right"),
+        ("RightStickUp", "Right stick up", "None"), ("RightStickDown", "Right stick down", "None"), ("RightStickLeft", "Right stick left", "None"), ("RightStickRight", "Right stick right", "None"),
+    ]
+    static let keys: [String] = ["None"] + (65...90).map { String(UnicodeScalar($0)!) } + (0...9).map { String($0) } + (1...12).map { "F\($0)" } + [
+        "Space", "Enter", "Escape", "Tab", "Backspace", "Up", "Down", "Left", "Right", "LeftShift", "RightShift", "LeftCtrl", "RightCtrl",
+        "Insert", "Delete", "Home", "End", "PageUp", "PageDown", "Num0", "Num1", "Num2", "Num3", "Num4", "Num5", "Num6", "Num7", "Num8", "Num9",
+        "Num*", "Num+", "Num-", "Num.", "Num/", ";", "=", ",", "-", ".", "/", "`", "[", "\\", "]", "'"]
+    static let pads = ["None", "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Start", "Back", "LS", "RS", "DpadUp", "DpadDown", "DpadLeft", "DpadRight"]
 }
 
 // MARK: - iCloud mirror
@@ -142,27 +207,89 @@ enum Sync {
         } catch { log.append("no backup of \(rel), kept it: \(error.localizedDescription)"); return false }
     }
 
+    // What each synced file looked like when both sides last agreed (its modification time): a file that changed on BOTH sides since is a conflict.
+    static var stateURL: URL { Store.local.appendingPathComponent("sync-state.json") }
+    static func loadState() -> [String: Double] {
+        guard let d = try? Data(contentsOf: stateURL), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Double] else { return [:] }
+        return o
+    }
+    static func saveState(_ s: [String: Double]) { if let d = try? JSONSerialization.data(withJSONObject: s) { try? d.write(to: stateURL) } }
+
+    /// Game saves kept after each game that changed them (save-history/<time>/hdd/...), the last 20; the settings window restores one.
+    static let historyDir = Store.local.appendingPathComponent("save-history")
+    static func snapshot(rels: [String], stamp: String) {
+        let saves = rels.filter { $0.hasPrefix("hdd/") }
+        guard !saves.isEmpty else { return }
+        for rel in saves {
+            let src = Store.local.appendingPathComponent(rel), dst = historyDir.appendingPathComponent("\(stamp)/\(rel)")
+            try? fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fm.copyItem(at: src, to: dst)
+        }
+        if let all = try? fm.contentsOfDirectory(atPath: historyDir.path).sorted(), all.count > 20 {
+            for old in all.dropLast(20) { try? fm.removeItem(at: historyDir.appendingPathComponent(old)) }
+        }
+    }
+    static func historyList() -> [String] { ((try? fm.contentsOfDirectory(atPath: historyDir.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted().reversed() }
+    /// Puts a snapshot's saves back (what they replace is first copied to sync-backups); returns a message.
+    static func restore(_ stamp: String) -> String {
+        let root = historyDir.appendingPathComponent(stamp)
+        let rels = files(root: root, rel: "hdd")
+        guard !rels.isEmpty else { return "That snapshot is empty." }
+        let now = DateFormatter(); now.dateFormat = "yyyyMMdd-HHmmss"; let bk = now.string(from: Date())
+        var n = 0
+        for rel in rels {
+            if !backupLocal(rel, stamp: bk) { continue }
+            if copy(root.appendingPathComponent(rel), Store.local.appendingPathComponent(rel)) {
+                try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: Store.local.appendingPathComponent(rel).path)     // newer than the cloud: it wins the next sync
+                n += 1
+            }
+        }
+        return "Restored \(n) file(s) from \(stamp); what they replaced is in sync-backups/\(bk)."
+    }
+
     /// pull: cloud -> local where the cloud file is newer or the local one is missing. push: local -> cloud likewise.
+    /// A file changed on both sides since the last sync is a conflict: the newer one wins, the other is kept in sync-backups, and sync-notice.txt says so.
     static func run(pull: Bool) -> String {
         guard Prefs.icloudOn else { return "iCloud sync is off: using local storage only" }
         guard Store.cloudAvailable else { return "iCloud Drive is not available: using local storage only" }
         try? fm.createDirectory(at: Store.cloud, withIntermediateDirectories: true)
         let (from, to) = pull ? (Store.cloud, Store.local) : (Store.local, Store.cloud)
         let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"; let stamp = f.string(from: Date())
-        var moved = 0, kept = 0
+        var state = loadState(), moved = 0, kept = 0, conflicts: [String] = [], movedRels: [String] = []
         for top in Store.synced {
             for rel in files(root: from, rel: top) {
                 let s = from.appendingPathComponent(rel), d = to.appendingPathComponent(rel)
                 if pull && !materialize(s) { continue }
                 guard fm.fileExists(atPath: s.path), let sm = mtime(s) else { continue }
-                if let dm = mtime(d), !(sm > dm.addingTimeInterval(2)) { kept += 1; continue }     // 2 s: file systems round times differently
+                if let dm = mtime(d) {
+                    if !(sm > dm.addingTimeInterval(2)) { kept += 1; if abs(sm.timeIntervalSince(dm)) <= 2 { state[rel] = dm.timeIntervalSince1970 }; continue }     // 2 s: file systems round times differently
+                    if let last = state[rel], dm.timeIntervalSince1970 > last + 2 {          // the side about to be replaced also changed since the last sync
+                        conflicts.append("\(rel): this Mac and iCloud both changed it; kept the newer (\(pull ? "iCloud's" : "this Mac's")), the other is in sync-backups")
+                        if !pull { _ = saveAside(cloud: d, rel: rel, stamp: stamp) }
+                    }
+                }
                 if pull && !backupLocal(rel, stamp: stamp) { continue }
-                if copy(s, d) { moved += 1 }
+                if copy(s, d) { moved += 1; movedRels.append(rel); if let m = mtime(d) { state[rel] = m.timeIntervalSince1970 } }
             }
         }
+        saveState(state)
+        if !pull && moved > 0 { snapshot(rels: movedRels, stamp: stamp) }
+        if !conflicts.isEmpty {
+            let notice = Store.local.appendingPathComponent("sync-notice.txt")
+            let text = "Your settings or saves were changed on two Macs (or on this Mac and in iCloud Drive) since they last synced.\n\n" + conflicts.joined(separator: "\n") + "\n"
+            try? text.write(to: notice, atomically: true, encoding: .utf8)
+        }
         var line = "iCloud \(pull ? "pull" : "push"): \(moved) updated, \(kept) already current"
+        if !conflicts.isEmpty { line += "; CONFLICT: " + conflicts.joined(separator: " | ") }
         if !log.isEmpty { line += "; " + log.joined(separator: "; ") }
         return line
+    }
+
+    /// keep iCloud's version of a file that a push is about to replace: sync-backups/<time>/icloud/<rel>
+    static func saveAside(cloud: URL, rel: String, stamp: String) -> Bool {
+        let dst = Store.local.appendingPathComponent("sync-backups/\(stamp)/icloud/\(rel)")
+        do { try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true); try fm.copyItem(at: cloud, to: dst); return true }
+        catch { log.append("could not keep iCloud's \(rel): \(error.localizedDescription)"); return false }
     }
 }
 
@@ -173,6 +300,30 @@ enum Prefs {
     static func save(show: Bool, icloud: Bool) {
         var k = kv; k.set("show_settings", show ? "1" : "0"); k.set("icloud_sync", icloud ? "1" : "0")
         try? k.write(to: Store.prefsFile)
+    }
+}
+
+// MARK: - diagnostics
+
+enum Diagnostics {
+    static func tail(_ url: URL, lines n: Int) -> String {
+        guard let d = try? Data(contentsOf: url) else { return "(none)" }
+        let s = String(decoding: d.suffix(200_000), as: UTF8.self)
+        return s.components(separatedBy: "\n").suffix(n).joined(separator: "\n")
+    }
+    /// What a bug report needs: the app and system, the settings, whether iCloud is in use, the last crash report and the end of the last log.
+    static func text() -> String {
+        let info = ProcessInfo.processInfo
+        var s = "OpenTricky diagnostics, \(Date())\n"
+        s += "macOS \(info.operatingSystemVersionString), \(info.processorCount) cores, \(info.physicalMemory / 1_073_741_824) GB\n"
+        s += "iCloud: \(Store.cloudAvailable && Prefs.icloudOn ? "on (\(Store.cloud.path))" : "off or unavailable")\n\n"
+        s += "== display.env ==\n" + ((try? String(contentsOf: Store.settingsFile, encoding: .utf8)) ?? "(none)") + "\n"
+        s += "== crash.txt ==\n" + tail(Store.local.appendingPathComponent("crash.txt"), lines: 60) + "\n\n"
+        s += "== sync.log (end) ==\n" + tail(Store.local.appendingPathComponent("sync.log"), lines: 15) + "\n\n"
+        let log = tail(Store.local.appendingPathComponent("last-run.log"), lines: 400)
+        let keep = log.components(separatedBy: "\n").filter { l in !l.hasPrefix("[VSH]") && !l.hasPrefix("[LIVE-PB]") && !l.hasPrefix("[NV2A-NOP]") && !l.contains("  [KERNEL]") }
+        s += "== last-run.log (end, noise removed) ==\n" + keep.suffix(120).joined(separator: "\n") + "\n"
+        return s
     }
 }
 
@@ -188,6 +339,8 @@ final class Model: ObservableObject {
     @Published var upscale = ""
     @Published var aniso = ""
     @Published var rumble = true
+    @Published var keyBind: [String: String] = [:]      // settings.ini [Keyboard]
+    @Published var padBind: [String: String] = [:]      // settings.ini [Controller]
     @Published var renderH = ""
     @Published var fullscreen = false
     @Published var fps = ""
@@ -237,6 +390,9 @@ final class Model: ObservableObject {
         renderH = kv.get("OT_RENDER_H") ?? ""
         windowH = kv.get("OT_WINDOW_H") ?? ""; if windowH == "900" { windowH = "" }
         rumble = kv.get("OT_RUMBLE") != "0"
+        let ini = Ini(url: Store.iniFile)
+        for r in Bindings.keyRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2; padBind[r.0] = ini.get("Controller", r.0) ?? r.3 }
+        for r in Bindings.stickRows { keyBind[r.0] = ini.get("Keyboard", r.0) ?? r.2 }
         aniso = kv.get("OT_ANISO") ?? ""; if aniso == "4" { aniso = "" }
         upscale = kv.get("OT_UPSCALE") ?? ""; if upscale == "sharp" { upscale = "" }
         cursorHide = kv.get("OT_CURSOR_HIDE_MS") ?? ""; if cursorHide == "2000" { cursorHide = "" }
@@ -252,6 +408,11 @@ final class Model: ObservableObject {
         showAtLaunch = Prefs.showAtLaunch; icloud = Prefs.icloudOn
         disc = (try? String(contentsOf: Store.discFile, encoding: .utf8)) ?? ""
         // a value the pickers do not offer (typed by hand in the file) must survive: add it
+    }
+
+    func resetBindings() {
+        for r in Bindings.keyRows { keyBind[r.0] = r.2; padBind[r.0] = r.3 }
+        for r in Bindings.stickRows { keyBind[r.0] = r.2 }
     }
 
     func save() -> Bool {
@@ -274,7 +435,13 @@ final class Model: ObservableObject {
         k.set("OT_BUTTONS", buttons.isEmpty ? nil : buttons)
         k.set("OT_HD_TEXTURES", hdPath.isEmpty ? nil : hdPath)
         k.set("OT_HD_MENUS", hdMenus && !hdPath.isEmpty ? "1" : nil)
+        var ini = Ini(url: Store.iniFile)
+        for r in Bindings.keyRows {
+            ini.set("Keyboard", r.0, keyBind[r.0] == r.2 ? nil : keyBind[r.0]); ini.set("Controller", r.0, padBind[r.0] == r.3 ? nil : padBind[r.0])
+        }
+        for r in Bindings.stickRows { ini.set("Keyboard", r.0, keyBind[r.0] == r.2 ? nil : keyBind[r.0]) }
         do {
+            try ini.write(to: Store.iniFile)
             try k.write(to: Store.settingsFile)
             kv = k
             Prefs.save(show: showAtLaunch, icloud: icloud)
@@ -344,6 +511,23 @@ struct SettingsView: View {
                     }
                     Toggle("Use HD textures in the menus too", isOn: $m.hdMenus).disabled(m.hdPath.isEmpty)
                 }
+                Section("Controls") {
+                    DisclosureGroup("Keyboard") {
+                        ForEach(Bindings.keyRows, id: \.0) { r in
+                            Picker(r.1, selection: Binding(get: { m.keyBind[r.0] ?? r.2 }, set: { m.keyBind[r.0] = $0 })) { ForEach(Bindings.keys, id: \.self) { Text($0).tag($0) } }
+                        }
+                        ForEach(Bindings.stickRows, id: \.0) { r in
+                            Picker(r.1, selection: Binding(get: { m.keyBind[r.0] ?? r.2 }, set: { m.keyBind[r.0] = $0 })) { ForEach(Bindings.keys, id: \.self) { Text($0).tag($0) } }
+                        }
+                    }
+                    DisclosureGroup("Controller buttons") {
+                        ForEach(Bindings.keyRows, id: \.0) { r in
+                            Picker(r.1, selection: Binding(get: { m.padBind[r.0] ?? r.3 }, set: { m.padBind[r.0] = $0 })) { ForEach(Bindings.pads, id: \.self) { Text($0).tag($0) } }
+                        }
+                    }
+                    Button("Reset keys and buttons to the defaults") { m.resetBindings() }
+                    Text("Named after the PlayStation buttons of the original game. Cross and Start always keep a key.").font(.caption).foregroundStyle(.secondary)
+                }
                 Section("Game disc and storage") {
                     HStack {
                         Text("Disc image"); Spacer()
@@ -352,9 +536,23 @@ struct SettingsView: View {
                     }
                     Toggle("Keep settings and game saves in iCloud Drive", isOn: $m.icloud).disabled(!Store.cloudAvailable)
                     Text(storageNote(m.icloud)).font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Save history (restore an earlier save)") {
+                        let h = Sync.historyList()
+                        if h.isEmpty { Text("None yet: a snapshot is kept after each game that changed a save.").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(h.prefix(10), id: \.self) { s in
+                            HStack { Text(s); Spacer(); Button("Restore") { m.message = Sync.restore(s) } }
+                        }
+                    }
                     HStack {
                         Button("Show local folder") { NSWorkspace.shared.open(Store.local) }
                         if Store.cloudAvailable { Button("Show iCloud folder") { try? FileManager.default.createDirectory(at: Store.cloud, withIntermediateDirectories: true); NSWorkspace.shared.open(Store.cloud) } }
+                    }
+                    HStack {
+                        Button("Copy diagnostics") {
+                            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(Diagnostics.text(), forType: .string)
+                            m.message = "Diagnostics copied: paste them into a bug report."
+                        }
+                        Button("Show last log") { NSWorkspace.shared.open(Store.local.appendingPathComponent("last-run.log")) }
                     }
                     Toggle("Show this window every time the game starts (hold Option to open it if off)", isOn: $m.showAtLaunch)
                 }
@@ -402,8 +600,12 @@ switch args.count > 1 ? args[1] : "gui" {
 case "sync":
     print(Sync.run(pull: (args.count > 2 ? args[2] : "pull") == "pull")); exit(0)
 case "selftest":      // load the settings, change some, save, and print the file (used by the tests; does not touch iCloud)
-    let m = Model(); m.icloud = false; m.fps = "120"; m.softShadows = true; m.shape = ""; m.hdPath = "/tmp/HD pack's"; m.hdMenus = true; m.gamut = 0.8; m.hdr = true
+    let m = Model(); m.icloud = false; m.fps = "120"; m.softShadows = true; m.shape = ""; m.hdPath = "/tmp/HD pack's"; m.hdMenus = true; m.keyBind["Cross"] = "Z"; m.padBind["Circle"] = "X"; m.keyBind["Start"] = "Enter"; m.gamut = 0.8; m.hdr = true
     exit(m.save() ? 0 : 1)
+case "restore":
+    print(Sync.restore(args.count > 2 ? args[2] : "")); exit(0)
+case "diagnostics":
+    print(Diagnostics.text()); exit(0)
 case "status":
     print("local: \(Store.local.path); iCloud: \(Store.cloudAvailable && Prefs.icloudOn ? Store.cloud.path : "off/unavailable")"); exit(0)
 default:

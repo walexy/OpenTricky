@@ -27,6 +27,9 @@ mkdir -p "$SUPPORT" || { say "Could not create $SUPPORT"; exit 1; }
 TOOL="$RES/ot-tool"
 [ -x "$TOOL" ] || TOOL=""
 [ -n "$TOOL" ] && "$TOOL" sync pull >> "$SUPPORT/sync.log" 2>&1          # newer settings / saves from iCloud Drive, if it is there
+if [ -f "$SUPPORT/sync-notice.txt" ]; then          # a settings/save conflict between Macs was found by the sync: say so once
+    say "$(cat "$SUPPORT/sync-notice.txt")"; rm -f "$SUPPORT/sync-notice.txt"
+fi
 if [ -n "$TOOL" ]; then
     gui_args="--auto"; for a in "$@"; do [ "$a" = "--settings" ] && gui_args="--settings"; done
     "$TOOL" gui $gui_args || exit 0                                       # closed without Play: do not start the game

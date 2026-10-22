@@ -1055,6 +1055,10 @@ int WINAPI OT_WINMAIN(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             xbox_SetVideoFlags(0x00010000u);
         if (aa) d3d8_SetMsaa(atoi(aa));
         if (an) d3d8_SetAnisotropy(atoi(an));
+        if (getenv("OT_HOME_DIR")) {   /* the macOS app starts the game with --direct but keeps the player's key and button bindings (settings.ini) */
+            controls_keep_essential(&launch_cfg.controls);
+            controls_set_current(&launch_cfg.controls);
+        }
         /* The menu is there in every mode; only launcher starts save to the
          * .ini, so a test run never rewrites the player's settings. */
         hostui_install(NULL, FALSE);
