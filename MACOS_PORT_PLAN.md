@@ -5,3 +5,10 @@
 - ProMotion / high refresh: `OT_FPS=monitor` already follows the display (120 on ProMotion) with the game's in-between frames; nothing missing.
 - MetalFX: SDL's GPU API does not expose the Metal device or command buffer, so MetalFX cannot be attached without leaving SDL's renderer. Instead the SDR
   final pass now upscales with Catmull-Rom bicubic + an anti-ringing sharpen (OT_UPSCALE=sharp|smooth, OT_SHARPEN 0..1; d3d8_gpu_out.c `up_ps`).
+
+## 2026-10-21: step 6
+- Audio: SDL3's default-device stream already follows the system output (AirPods etc.); `OT_AUDIO_DEVICE=<name>` picks a specific output (settings window lists them, CoreAudio names).
+  Spatial audio for AirPods applies at the system level to the stereo stream ("Spatialize Stereo"); nothing app-side to add.
+- Netplay (port/src/netplay, XBOX_NET): initialises on macOS ("[NET] active") but is a localhost-only prototype; with host + guest both started into a race by
+  `macos/tests/drive.py` both instances closed ("[WINDOW] closed: exiting") when the race loaded. Two plain instances side by side run fine, so it is netplay-specific; not investigated further.
+- Upstream PR: text in macos/UPSTREAM_PR.md; not opened (it is a public action on someone else's repository).

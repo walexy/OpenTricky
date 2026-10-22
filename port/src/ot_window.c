@@ -345,9 +345,18 @@ int ot_window_rumble(int port, unsigned short low, unsigned short high)
 {
     static int on = -1;
     if (on < 0) { const char *e = getenv("OT_RUMBLE"); on = !(e && e[0] == '0'); }
-    if (port < 0 || port >= 4 || !s_gp[port]) return 0;
+    static unsigned calls, told;
+    int ok;
+    calls++;
+    if (port < 0 || port >= 4 || !s_gp[port]) {
+        if (told++ < 3) fprintf(stderr, "[RUMBLE] the title asked for vibration on port %d (low %u high %u): no controller in that slot\n", port, low, high);
+        return 0;
+    }
     if (!on) return 1;
-    return SDL_RumbleGamepad(s_gp[port], low, high, low || high ? 1000 : 0) ? 1 : 0;
+    ok = SDL_RumbleGamepad(s_gp[port], low, high, low || high ? 1000 : 0) ? 1 : 0;
+    if (told++ < 6 || !ok)
+        if (told < 40) { told++; fprintf(stderr, "[RUMBLE] call %u: port %d low %u high %u on %s -> %s%s%s\n", calls, port, low, high, SDL_GetGamepadName(s_gp[port]), ok ? "ok" : "FAILED (", ok ? "" : SDL_GetError(), ok ? "" : ")"); }
+    return ok;
 }
 int ot_window_run(int (*guest)(void *), void *arg)
 {
