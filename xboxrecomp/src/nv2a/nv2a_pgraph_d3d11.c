@@ -3151,6 +3151,7 @@ static void draw_program_inner(const uint32_t *indices, uint32_t start, uint32_t
     int points = g_pg.draw_mode == 1;
     Nv2aVshDraw gd;
     int gpu = 0;
+    memset(&gd, 0, sizeof gd);          /* no stale array pointers from an earlier stack use (a crash read one) */
     double pt0 = g_perf_on ? perf_now() : 0.0;
 
     if (count == 0)
