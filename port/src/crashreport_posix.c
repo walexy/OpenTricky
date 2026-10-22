@@ -19,6 +19,8 @@
 #include <stdarg.h>
 #include "crashreport.h"
 #include "recomp_types.h"
+#include "version.h"
+#include <sys/sysctl.h>
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #include <sys/ucontext.h>
@@ -30,6 +32,8 @@ extern volatile uint32_t g_icall_trace[16];
 extern volatile uint32_t g_icall_trace_idx;
 
 static int s_report_fd = -1;
+static char s_hdr[3072];      /* build, system and settings, filled at install (not in the signal handler) */
+extern char **environ;
 
 static void out(const char *fmt, ...)
 {
@@ -78,6 +82,7 @@ static void on_fatal(int sig, siginfo_t *si, void *ucv)
 #else
     (void)ucv;
 #endif
+    out("%s", s_hdr);
     out("guest:  eax=%08X ecx=%08X edx=%08X ebx=%08X\n        esp=%08X esi=%08X edi=%08X\n",
         g_eax, g_ecx, g_edx, g_ebx, g_esp, g_esi, g_edi);
     out("last label stamped by any thread: loc_%08X\n", g_last_loc);
@@ -101,6 +106,15 @@ void crashreport_install(void)
     int sigs[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT }, i;
     if (done || (e && e[0] == '0')) return;
     done = 1;
+    {   /* what a report needs to be read later: the build, the Mac, and the OT_/XBOX_ settings in effect */
+        char os[64] = "?", model[64] = "?"; size_t l = sizeof os; int n = 0; char **ep;
+        sysctlbyname("kern.osproductversion", os, &l, NULL, 0);
+        l = sizeof model; sysctlbyname("hw.model", model, &l, NULL, 0);
+        n += snprintf(s_hdr + n, sizeof s_hdr - (size_t)n, "build:   OpenTricky %s\nsystem:  macOS %s, %s\nsettings:", OT_VERSION, os, model);
+        for (ep = environ; ep && *ep && n < (int)sizeof s_hdr - 100; ep++)
+            if (!strncmp(*ep, "OT_", 3) || !strncmp(*ep, "XBOX_", 5)) n += snprintf(s_hdr + n, sizeof s_hdr - (size_t)n, " %.80s", *ep);
+        snprintf(s_hdr + n, sizeof s_hdr - (size_t)n, "\n");
+    }
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_fatal;
     sa.sa_flags = SA_SIGINFO | SA_NODEFER;
