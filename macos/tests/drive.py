@@ -3,7 +3,7 @@
 
     drive.py [--iso PATH] [--bin PATH] [--out DIR] [--env K=V ...] "wait 14; shot a; press START 200; wait 2; shot b"
 
-Steps (separated by ;):  wait <seconds> | press <BUTTON> [ms] | shot <name> | hold <BUTTON> <seconds> | seq <BUTTON>@<every s>x<count> | burst <name> <count> <interval s>
+Steps (separated by ;):  wait <seconds> | press <BUTTON> [ms] | shot <name> | hold <BUTTON> <seconds> | seq <BUTTON>@<every s>x<count> | burst <name> <count> <interval s> | waitlog <text_with_underscores> <timeout s> | until <text> <BUTTON> <every s> <timeout s>
 Screenshots land in <out>/<name>.png. Exit status 1 if the game died (crash.txt in the run directory) before the script finished.
 """
 import os, socket, subprocess, sys, time, argparse, signal
@@ -63,6 +63,16 @@ def main():
                     cmd("shot " + os.path.join(a.out, "%s_%02d.png" % (w[1], k))); times.append("%02d %.2f" % (k, time.time() - t0))
                     time.sleep(max(0.0, iv - 0.15))
                 open(os.path.join(a.out, w[1] + ".times"), "w").write("\n".join(times))
+            elif w[0] in ("waitlog", "until"):       # waitlog <text> <timeout s> | until <text> <BUTTON> <every s> <timeout s>: pressing BUTTON until the log has <text>
+                text = w[1].replace("_", " ").encode(); gl = os.path.join(a.out, "game.log")
+                if w[0] == "waitlog": btn, every, tmo = None, 0.5, float(w[2])
+                else: btn, every, tmo = w[2], float(w[3]), float(w[4])
+                end = time.time() + tmo; seen = False
+                while time.time() < end and alive():
+                    if text in open(gl, "rb").read(): seen = True; break
+                    if btn: cmd("press %s 200" % btn)
+                    time.sleep(every)
+                print(step, "->", "seen" if seen else "TIMEOUT")
             elif w[0] == "seq":
                 b, rest = w[1].split("@"); every, count = rest.split("x")
                 for _ in range(int(count)):

@@ -36,7 +36,9 @@ double pacing_tick_scale(void)      /* called from the 60 Hz tick thread */
 {
     static int last = -2, shown;
     static double t0;
-    int st = ot_race_state();
+    int st;
+    if (!g_xbox_mem_offset) return 1.0;      /* the guest window is not mapped yet (this is also called before main): nothing to read */
+    st = ot_race_state();
     if (st != last && shown < 60) {        /* a log of the race states with wall-clock times: how long each lasted */
         LARGE_INTEGER f, c; double now;
         QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c);
